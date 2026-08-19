@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- WPF application shell. UI only: main window, proxy configuration UI,
+       process selection UI, rules UI, start/stop controls, status, logs, tray.
+       Must NOT contain networking, WinDivert, or SOCKS5 implementation. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ProxyApp.Core\ProxyApp.Core.csproj" />
+  </ItemGroup>
+
+</Project>

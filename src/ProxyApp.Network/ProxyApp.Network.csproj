@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- SOCKS5 protocol, TCP connection handling, proxy authentication, connection
+       lifecycle. Must not depend on WPF or WinDivert. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ProxyApp.Core\ProxyApp.Core.csproj" />
+  </ItemGroup>
+
+</Project>

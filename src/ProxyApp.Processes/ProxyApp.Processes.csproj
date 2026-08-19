@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Windows process enumeration and process-to-connection mapping.
+       Windows-specific process APIs are isolated here. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ProxyApp.Core\ProxyApp.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Platform-independent business logic: configuration models, rules,
+       routing decisions, validation, interfaces. Intentionally no Windows-specific code. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+</Project>

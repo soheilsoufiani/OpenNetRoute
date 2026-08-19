@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ProxyApp.Core/ProxyApp.Core.csproj" />
+    <Project Path="src/ProxyApp.Network/ProxyApp.Network.csproj" />
+    <Project Path="src/ProxyApp.Processes/ProxyApp.Processes.csproj" />
+    <Project Path="src/ProxyApp.WinDivert/ProxyApp.WinDivert.csproj" />
+    <Project Path="src/ProxyApp/ProxyApp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ProxyApp.Core.Tests/ProxyApp.Core.Tests.csproj" />
+    <Project Path="tests/ProxyApp.IntegrationTests/ProxyApp.IntegrationTests.csproj" />
+    <Project Path="tests/ProxyApp.Network.Tests/ProxyApp.Network.Tests.csproj" />
+  </Folder>
+</Solution>

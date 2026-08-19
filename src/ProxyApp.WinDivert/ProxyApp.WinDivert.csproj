@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- WinDivert integration: packet capture, injection, filtering, connection
+       interception. All WinDivert-specific code stays isolated in this project. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ProxyApp.Core\ProxyApp.Core.csproj" />
+    <ProjectReference Include="..\ProxyApp.Processes\ProxyApp.Processes.csproj" />
+  </ItemGroup>
+
+</Project>
