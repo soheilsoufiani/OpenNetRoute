@@ -63,8 +63,20 @@ internal static class Program
 
         // Experiment 4: reinjection / loop prevention (pass-through).
         // E4 uses a flawed loop heuristic; E4b/E4c/E4d are the focused isolation
-        // experiments. Run E4d when the --e4d argument is passed, E4b otherwise.
-        if (args.Contains("--e4d"))
+        // experiments. E5 is the ferry R3 validation (crafted SYN-ACK acceptance).
+        if (args.Contains("--e6"))
+        {
+            await Experiment6.RunAsync();
+        }
+        else if (args.Contains("--e5b"))
+        {
+            await Experiment5b.RunAsync();
+        }
+        else if (args.Contains("--e5"))
+        {
+            await Experiment5.RunAsync();
+        }
+        else if (args.Contains("--e4d"))
         {
             await Experiment4d.RunAsync();
         }
