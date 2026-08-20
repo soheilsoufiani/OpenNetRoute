@@ -184,6 +184,9 @@ The spike supports and constrains the ferry design in `docs/ARCHITECTURE_RESEARC
 | E4c Inbound observer (D) | **INCONCLUSIVE** — inbound capture alone insufficient for a strict verdict |
 | E4d TCP trace after SYN-ACK | **`TCP_TRACE_CLIENTHELLO_NO_RESPONSE`** |
 | E5 Crafted response injection | **NOT TESTED** (out of scope for this spike) |
+| E5b Crafted SYN-ACK acceptance (R3) | **PASS** — real Windows client accepted the crafted SYN-ACK (Impostor bit NOT set, checksums via `WinDivertHelperCalcChecksums`, matching the `netfilter.c` pattern) and sent ACK + data |
+| E6 Bidirectional data with ISN translation (R2) | **PASS** — client HTTP request relayed to upstream, HTTP response relayed back (seq starts at S1+1), curl exited 0 |
+| E7 SYN-time attribution + hold-SYN tolerance (R1+R4) | **PASS** — `GetExtendedTcpTable` found the owning PID (curl) in 3ms; 600ms hold did not break the handshake (client ACKed the crafted SYN-ACK). Note: the `synRetransmit` field in E7 output is a false-positive heuristic (same seq value reused by the client's ACK/data) and must not be treated as an actual SYN retransmission.
 
 ---
 
@@ -191,17 +194,17 @@ The spike supports and constrains the ferry design in `docs/ARCHITECTURE_RESEARC
 
 | Risk | Status after spike |
 |---|---|
-| R1 SYN-before-PID attribution race | **NOT TESTED** — FLOW-layer PID attribution works (E3 CONFIRMED), but the SYN-time decision race (capturing a SYN before `GetExtendedTcpTable` has the row) was not measured. Needs Phase 3/5 timing measurement. |
-| R2 Seq-offset ferry vs. TCP options | **NOT TESTED** — no packet construction was attempted. Open question (Phase 6). |
-| R3 Crafted inbound injection ABI | **NOT TESTED** — E5 deferred. Open question (Phase 6). |
-| R4 Hold SYN during SOCKS5 connect | **NOT TESTED** — no ferry loop was built. Open question (Phase 6). |
+| R1 SYN-before-PID attribution race | **PASS (E7)** — `GetExtendedTcpTable` found the owning PID (curl) in **3ms** for a captured SYN, fast enough to make the routing decision before upstream setup. |
+| R2 Seq-offset ferry vs. TCP options | **PASS (E6)** — bidirectional data flowed through a user-space ferry with distinct client/upstream ISNs and correct seq/ack translation; a real curl client completed an HTTP exchange (seq starts at S1+1). |
+| R3 Crafted inbound injection ABI | **PASS (E5b)** — a crafted inbound SYN-ACK injected via WinDivert (Outbound=0, valid IfIdx/SubIfIdx, Impostor NOT set, checksums via helper) is accepted by a real Windows TCP client, which completes the handshake and sends data. |
+| R4 Hold SYN during SOCKS5 connect | **PASS (E7)** — a 600ms SYN hold was accepted by the Windows TCP client; it ACKed the crafted SYN-ACK and sent application data without a SYN retransmit. |
 | R5 DNS leak | **NOT TESTED** — out of scope for this spike (documented in the architecture doc). |
 | R6 QUIC / UDP/443 bypass | **NOT TESTED** — out of scope for this spike. |
 | R7 IPv6 | **NOT TESTED** — spike was IPv4-only by design (user's internet has no IPv6). |
 | R8 PID reuse | **NOT TESTED** — FLOW-layer PIDs observed once; cache invalidation not exercised. |
 | R15 Endpoint no-response after handshake | **INCONCLUSIVE** — E4d shows the ClientHello leaves through the reinjection path but no inbound response follows. Root cause UNKNOWN. Does not block the ferry's selected-process path (which does not pass through traffic). |
 
-**Overall:** the spike de-risks **capture, field inspection, packet-level reinjection, and FLOW-layer process attribution** — the foundation of the ferry. It does **not** de-risk **crafted response injection** (R2/R3), which remains the critical unknown before Phase 6.
+**Overall:** all four architectural risks for the ferry's selected-process path — **R1 (SYN-time attribution), R2 (seq/ack translation), R3 (crafted inbound injection), R4 (hold-SYN tolerance)** — are now **validated** by the spike (E5b, E6, E7). The spike does **not** validate SOCKS5 integration, the production ferry implementation, the GUI, or full end-to-end production behavior — those remain Phase 6+ implementation work, not untested architectural risk.
 
 ---
 
@@ -212,4 +215,8 @@ The spike supports and constrains the ferry design in `docs/ARCHITECTURE_RESEARC
 | WinDivert capture + flow attribution | **PASS** (E0–E3 CONFIRMED) |
 | Packet reinjection feasibility | **PASS at packet level** (E4b: 9/9 delivered to wire; no recapture loop demonstrated) |
 | End-to-end passthrough to `1.1.1.1:443` | **INCONCLUSIVE / endpoint-specific failure** — handshake completes, ClientHello leaves, no inbound response; root cause UNKNOWN (E4d) |
-| Selected-process ferry path (hold SYN → SOCKS5 → craft SYN-ACK → sequence translation → forward data) | **NOT TESTED in this spike** — deferred to Phase 6 validation |
+| Crafted inbound SYN-ACK acceptance (R3) | **PASS** (E5b) |
+| Bidirectional data with ISN translation (R2) | **PASS** (E6) |
+| SYN-time process attribution (R1) | **PASS** (E7) — PID found in 3ms |
+| Hold-SYN tolerance (R4) | **PASS** (E7) — 600ms hold accepted |
+| Full selected-process ferry (hold SYN → SOCKS5 → craft SYN-ACK → translate seq/ack → forward data) | **NOT TESTED as an integrated production ferry.** The individual packet-level primitives (R1–R4) are validated, but SOCKS5 integration, the production ferry implementation, the GUI, and full end-to-end production behavior remain Phase 6+ implementation. |
