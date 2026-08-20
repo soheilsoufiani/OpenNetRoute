@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Isolated WinDivert feasibility spike. NOT part of the main solution.
+       This project exists only to experimentally validate the assumptions behind
+       the future TCP ferry. It is standalone and self-contained. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>WinDivertSpike</AssemblyName>
+    <RootNamespace>WinDivertSpike</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinDivert native binaries are NOT bundled here. They are loaded from the
+         directory passed via the SPIKE_WINDIVERT_DIR environment variable (defaults
+         to the TunnelX appdata dir which already has the installed driver). -->
+  </ItemGroup>
+
+</Project>
