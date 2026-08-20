@@ -62,7 +62,20 @@ internal static class Program
         await Experiment3_FlowProcessAttributionAsync();
 
         // Experiment 4: reinjection / loop prevention (pass-through).
-        await Experiment4_ReinjectPassThroughAsync();
+        // E4 uses a flawed loop heuristic; E4b/E4c/E4d are the focused isolation
+        // experiments. Run E4d when the --e4d argument is passed, E4b otherwise.
+        if (args.Contains("--e4d"))
+        {
+            await Experiment4d.RunAsync();
+        }
+        else if (args.Contains("--e4b"))
+        {
+            await Experiment4b.RunAsync();
+        }
+        else
+        {
+            await Experiment4_ReinjectPassThroughAsync();
+        }
 
         Console.WriteLine();
         Console.WriteLine("=== Spike complete ===");

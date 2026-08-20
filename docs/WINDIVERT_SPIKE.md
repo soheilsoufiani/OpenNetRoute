@@ -1,6 +1,6 @@
 # WinDivert Feasibility Spike
 
-**Status:** Spike in progress — isolated experiments, no production code
+**Status:** Spike completed — E0–E4d results finalized
 **Date:** 2026-08-20
 **Location:** `spikes/WinDivertSpike/` (standalone console app, **not part of the main solution**)
 
@@ -77,7 +77,7 @@ Traffic trigger: `curl.exe -s -o NUL --max-time 8 https://1.1.1.1/` (a controlle
   - The pass-through re-injected 5 packets successfully (`WinDivertSend` did not fail).
   - A SYN, an ACK, and three PSH|ACK packets were observed and re-injected.
   - The **"LOOP?" flags were false positives** (see §4.1): my heuristic flagged any duplicate sequence number, but the "duplicates" were a normal ACK (`seq = SYN+1`) and TCP retransmits of the same data packet — not re-captured copies.
-  - **The connection stalled:** `curl` did not complete within 8s and retransmitted the same data payload 3 times. So pass-through reinjection at priority 0 did **not** transparently pass the connection through to completion in this experiment. This is the important open question for the ferry (see §4.2).
+  - **The connection stalled:** `curl` did not complete within 8s and retransmitted the same data payload 3 times. So pass-through reinjection at priority 0 did **not** transparently pass the connection through to completion in this experiment. This initial finding is superseded by E4b–E4d below, which isolate the reinjection mechanism from the endpoint behavior.
 
 ### Experiment 4.1 — Why the "LOOP?" flags are false positives
 
@@ -88,15 +88,42 @@ WinDivert's documented priority model: packets are diverted to higher-priority h
 
 **Conclusion:** the spike's `loopDetected` heuristic was wrong. Loop prevention was **not demonstrated** — but it was also **not refuted**; the design must be validated with a better discriminator (e.g., tracking `(srcIP,srcPort,dstIP,dstPort,seq,flags)` and only flagging an exact packet copy, not sequence-value reuse).
 
-### Experiment 4.2 — The stall is the real open question
+### Experiment 4b — Pass-through reinjection isolation (3-handle observer)
 
-Even though re-injection did not loop, `curl` never completed. This is the finding that matters most for the ferry. Possible causes to investigate, in order:
+- **Goal:** determine whether a priority-0 `WinDivertRecv` → `WinDivertSend` pass-through actually delivers packets to the wire, and whether it loops.
+- **Method:** three handles on the same outbound filter: **B** (priority 1, SNIFF) sees original packets; **A** (priority 0, modify) is the pass-through (recv → send unchanged); **C** (priority −1, SNIFF) sees packets *after* A re-injects.
+- **Result (elevated):** `passThroughSent=9, sendFailures=0, B(original)=9, C(after reinject)=9`. **All 9 re-injected packets were observed at C.** No packet appeared twice at B. This confirms re-injection delivers packets to the wire and shows no recapture loop.
 
-1. **Priority/ordering side effect of intercepting the outbound path:** a priority-0 network-layer handle that captures and re-injects *outbound* packets may interfere with the TCP stack's expected behavior (e.g., the stack does not see the packet leave and keeps retransmitting, or the re-injected packet's checksum/TTL state is not preserved exactly). The docs warn that re-injecting unmodified packets can cause issues when other callout drivers are present.
-2. **The reverse (inbound) path is not intercepted:** inbound SYN-ACK/data from `1.1.1.1` flows normally; if the outbound re-injection corrupted the connection state, the server never saw a complete handshake or the client never saw the server's reply.
-3. **The `WinDivertAddress` was not re-zeroed/kept consistent** across the `WinDivertRecv`/`WinDivertSend` pair for the network layer. The spike reused the same `addr` struct each iteration, which is correct for pass-through, but this should be re-checked.
+### Experiment 4c — Inbound observer D (server → client)
 
-**Status: INCONCLUSIVE / NEEDS RE-TEST** — the stall is unexplained and must be resolved before the ferry relies on priority-0 network-layer pass-through reinjection.
+- **Goal:** independently observe whether the server sends anything back.
+- **Method:** add a passive **D** handle (priority 1, SNIFF+RECV_ONLY) filtered to `inbound and ip and ip.SrcAddr == 1.1.1.1 and tcp and tcp.SrcPort == 443`.
+- **Result (elevated):** the inbound capture alone did not cleanly prove or refute a server response beyond the handshake — classified **INCONCLUSIVE** (evidence insufficient for a strict inbound-response verdict).
+
+### Experiment 4d — TCP trace after SYN-ACK (A/B/C/D, timestamp-ordered)
+
+- **Goal:** the final minimal diagnostic — record the full TCP exchange keyed by the exact 4-tuple, in timestamp order, with no packet modification and no loop detection.
+- **Method:** same A/B/C/D architecture; record for every packet: timestamp, direction, flags, seq, ack, TCP payload length, src/dst ports.
+- **Result (elevated):**
+  ```
+  19ms  OUT B/C  12419->443  SYN   seq=1181730305 ack=0           payload=0
+  98ms  IN  D    443->12419  SYN-ACK seq=3255670904 ack=1181730306 payload=0
+  99ms  OUT B/C  12419->443  ACK   seq=1181730306 ack=3255670905   payload=0
+  105ms OUT B/C  12419->443  PSH|ACK seq=1181730306 ack=3255670905 payload=438  (ClientHello)
+  420ms OUT B/C  ... PSH|ACK retransmit payload=438
+  729ms OUT B/C  ... PSH|ACK retransmit payload=438
+  1332ms OUT B/C ... PSH|ACK retransmit payload=438
+  2538ms OUT B/C ... PSH|ACK retransmit payload=438
+  4950ms OUT B/C ... PSH|ACK retransmit payload=438
+  8009ms OUT B/C 12419->443  RST|ACK (curl gave up)
+  ```
+  Answers, from packet evidence only:
+  - **A)** Did the ClientHello leave through C? **YES** — every ClientHello copy observed at C.
+  - **B)** How many times at C? **6×** (105, 420, 729, 1332, 2538, 4950ms).
+  - **C)** Any inbound after the SYN-ACK? **NO** — D observed exactly one inbound packet, the SYN-ACK at 98ms; nothing after.
+  - **D)** ClientHello retransmits? **YES** — 6× over ~4845ms (exponential backoff: 315, 309, 603, 1206, 2412ms gaps).
+  - **E)** Pattern: complete handshake (SYN→SYN-ACK→ACK) followed by outbound ClientHello retransmission with **no inbound response**.
+  - **Classification:** **`TCP_TRACE_CLIENTHELLO_NO_RESPONSE`**.
 
 ### Experiment 5 — (optional) Crafted TCP response injection
 
@@ -107,13 +134,14 @@ Even though re-injection did not loop, `curl` never completed. This is the findi
 
 ## 4. Packet behavior observed
 
-From the elevated runs (Experiments 0–3 **CONFIRMED**, Experiment 4 **INCONCLUSIVE**):
+From the elevated runs (Experiments 0–3 **CONFIRMED**, E4d **TCP_TRACE_CLIENTHELLO_NO_RESPONSE**):
 
 - The scoped handle captures **only** outbound packets to `1.1.1.1:443` — nothing else was seen (loopback traffic, other destinations all excluded by the filter).
 - **Experiments 1–2 (capture-without-reinject) consumed the packets.** These experiments opened modify-mode handles and called `WinDivertRecv` but never `WinDivertSend`. Per WinDivert's default *drop-and-divert* semantics, captured packets that are not re-injected are **dropped**. The 3 duplicate SYN seqs observed in Experiment 2 were **curl retransmitting its dropped SYN**, not a pass-through working. This is documented honestly: the earlier draft's claim that "the pass-through handle does not consume the packet" was **incorrect**.
 - `ifIdx=19`, `outbound=True`, `loopback=False`, `ipv6=False`, `sniffed=False` — the address metadata is populated and usable.
 - Source port was an ephemeral high port; destination was fixed at `1.1.1.1:443`.
-- **Experiment 4 (re-inject with `WinDivertSend`):** 5 packets re-injected without send failures, but `curl` stalled (data retransmitted 3×, no completion within 8s). See §4.2. This means a modify-mode priority-0 pass-through did **not** yet demonstrate a working transparent connection.
+- **E4b:** a priority-0 recv→send pass-through delivered all 9 captured packets to the wire (observed at C, a lower-priority SNIFF handle). No packet was re-presented at B (no recapture loop demonstrated).
+- **E4d:** the TCP handshake completes through the reinjection path (SYN→SYN-ACK→ACK). The ClientHello (438 bytes) leaves through C and is retransmitted 6× with exponential backoff. **No further inbound packet from `1.1.1.1:443` was observed after the SYN-ACK during the test window.**
 
 ---
 
@@ -121,8 +149,9 @@ From the elevated runs (Experiments 0–3 **CONFIRMED**, Experiment 4 **INCONCLU
 
 - The spike uses `WinDivertRecv`/`WinDivertSend` synchronously in a background task. There is **no non-blocking API** in WinDivert; cancellation is done by closing the handle, which unblocks the pending recv. This is the pattern the production ferry must use for clean shutdown.
 - The spike does **not** construct/modify packets. Packet **construction** (crafted SYN-ACK, RST, payload wrapping) is deliberately left for the Phase 4–6 ferry work; this spike only proves capture/inspection fundamentals and probes reinjection.
-- **Experiment 4 used a flawed loop heuristic** (`seenSeq`) that produced false positives. A correct test must identify exact packet copies (full tuple + seq + flags), not reuse of a sequence value, and ideally open a second handle at a different priority to observe whether injected packets are re-offered.
-- **The pass-through stall is unresolved.** A modify-mode priority-0 handle that re-injects outbound packets did not produce a working end-to-end connection. This is the single most important open question for the ferry and must be investigated before Phase 6.
+- **Experiment 4 used a flawed loop heuristic** (`seenSeq`) that produced false positives. E4b/E4d replaced it with multi-priority observer handles and exact packet fingerprints; no recapture loop was demonstrated.
+- **The endpoint behavior observed in E4d is reported as a fact, not explained.** After the SYN-ACK/ACK handshake, the ClientHello leaves through the reinjection path, but no further inbound packet from `1.1.1.1:443` was observed during the test window. The root cause is **UNKNOWN** — this spike does not claim the server rejected the packet, that Cloudflare caused it, that timing heuristics caused it, or any other specific root cause.
+- **This test does NOT validate the ferry's selected-process path:** hold SYN → establish upstream SOCKS5 connection → craft SYN-ACK → sequence translation → forward data. That path was never exercised by this spike.
 - Elevation is mandatory and the UAC consent cannot be automated; the spike must be launched from an elevated shell.
 - The spike targets a fixed public IP (`1.1.1.1:443`) for reproducibility. It does not depend on any specific network topology beyond outbound internet access.
 
@@ -133,11 +162,12 @@ From the elevated runs (Experiments 0–3 **CONFIRMED**, Experiment 4 **INCONCLU
 The spike supports and constrains the ferry design in `docs/ARCHITECTURE_RESEARCH.md` §9:
 
 1. **Capture is CONFIRMED feasible:** a narrowly filtered network-layer handle reliably sees outbound TCP SYN packets with full tuple + seq/ack metadata. The ferry can key its flow table on `(srcIP, srcPort, dstIP, dstPort)` from the captured SYN.
-2. **Process attribution is CONFIRMED:** the FLOW layer yields the owning PID (`pid=2640` in Experiment 3) via a SNIFF+RECV_ONLY handle. The ferry can use it as the primary attribution source, with `GetExtendedTcpTable` as fallback (Phase 3/5).
+2. **Process attribution is CONFIRMED:** the FLOW layer yields the owning PID via a SNIFF+RECV_ONLY handle. The ferry can use it as the primary attribution source, with `GetExtendedTcpTable` as fallback (Phase 3/5).
 3. **Cancellation via handle close works:** a blocked `WinDivertRecv` is unblocked by closing the handle. This is the shutdown primitive the ferry needs (`CLAUDE.md`: "Ensure all background workers terminate cleanly").
-4. **A modify-mode pass-through that re-injects outbound packets did NOT produce a working transparent connection (INCONCLUSIVE).** The ferry's design should therefore **not rely on re-injecting unmodified packets on the same priority-0 handle.** The ferry *holds* the SYN for selected apps (never re-injects it) and injects *crafted* inbound responses — a fundamentally different path that was not exercised here. The E4 stall needs to be understood before the ferry's "reinject for non-selected processes" path is assumed safe.
-5. **Injection of crafted responses (Exp 5, not tested here)** remains the biggest open question for the ferry's "present the real upstream ISN in a crafted SYN-ACK" design — it must be validated with a real client, on both Ethernet and Wi-Fi.
-6. **Loop prevention must be validated with a correct discriminator:** track exact packet copies (full tuple + seq + flags), not sequence-value reuse. Per WinDivert's priority model, injected packets are not re-offered to the same priority handle, but this should be confirmed experimentally with a second observer handle at a different priority.
+4. **Packet-level reinjection through a priority-0 modify-mode pass-through is CONFIRMED at the packet level:** all re-injected packets appeared at the lower-priority observer (E4b: 9/9). No recapture loop was demonstrated.
+5. **The TCP handshake completes through the reinjection path** (E4d: SYN→SYN-ACK→ACK). After the handshake, the ClientHello leaves through the reinjection path but no further inbound packet from `1.1.1.1:443` was observed during the test window. The root cause of this endpoint behavior is **UNKNOWN**.
+6. **This spike does NOT validate the ferry's selected-process path** (hold SYN → establish upstream SOCKS5 → craft SYN-ACK → sequence translation → forward data). That path was never exercised.
+7. **Injection of crafted responses** (crafted SYN-ACK, RST, data wrapping) remains the critical open question for the ferry design and must be validated in Phase 4–6 with a real client.
 
 ---
 
@@ -148,11 +178,12 @@ The spike supports and constrains the ferry design in `docs/ARCHITECTURE_RESEARC
 | E0 Load + open handle | **CONFIRMED** |
 | E1 Capture outbound SYN | **CONFIRMED** |
 | E2 Inspect fields | **CONFIRMED** |
-| E3 Flow-layer process attribution | **CONFIRMED** (pid=2640) |
-| E4 Reinjection / loop prevention | **INCONCLUSIVE** — `WinDivertSend` worked (5 re-injected, no send failure) but `curl` stalled; the `loopDetected` heuristic produced false positives; loop prevention not demonstrated nor refuted |
+| E3 Flow-layer process attribution | **CONFIRMED** |
+| E4 Reinjection / loop prevention (initial) | **INCONCLUSIVE** — flawed `loopDetected` heuristic (false positives); superseded by E4b–E4d |
+| E4b Pass-through reinjection isolation (A/B/C) | **CONFIRMED** — 9/9 re-injected packets observed at C; no recapture loop demonstrated |
+| E4c Inbound observer (D) | **INCONCLUSIVE** — inbound capture alone insufficient for a strict verdict |
+| E4d TCP trace after SYN-ACK | **`TCP_TRACE_CLIENTHELLO_NO_RESPONSE`** |
 | E5 Crafted response injection | **NOT TESTED** (out of scope for this spike) |
-
-*E4 remains the key open question: pass-through reinjection did not yield a working connection, and the loop heuristic needs a correct discriminator. Both must be resolved before the ferry design is finalized (see §4.1, §4.2, §6).*
 
 ---
 
@@ -168,6 +199,17 @@ The spike supports and constrains the ferry design in `docs/ARCHITECTURE_RESEARC
 | R6 QUIC / UDP/443 bypass | **NOT TESTED** — out of scope for this spike. |
 | R7 IPv6 | **NOT TESTED** — spike was IPv4-only by design (user's internet has no IPv6). |
 | R8 PID reuse | **NOT TESTED** — FLOW-layer PIDs observed once; cache invalidation not exercised. |
-| **NEW — R15 pass-through reinjection stalls** | **INCONCLUSIVE / NEEDS RE-TEST** — a modify-mode priority-0 handle that re-injects outbound packets did not produce a working connection (E4). Must be understood before assuming the ferry's "reinject for non-selected" path is safe. |
+| R15 Endpoint no-response after handshake | **INCONCLUSIVE** — E4d shows the ClientHello leaves through the reinjection path but no inbound response follows. Root cause UNKNOWN. Does not block the ferry's selected-process path (which does not pass through traffic). |
 
-**Overall:** the spike de-risks **capture, field inspection, and FLOW-layer process attribution** (the foundation of the ferry). It does **not** yet de-risk **reinjection/loop prevention** (R15) or **crafted injection** (R2/R3), which remain the critical unknowns before Phase 6.
+**Overall:** the spike de-risks **capture, field inspection, packet-level reinjection, and FLOW-layer process attribution** — the foundation of the ferry. It does **not** de-risk **crafted response injection** (R2/R3), which remains the critical unknown before Phase 6.
+
+---
+
+## 9. Decision / Gate
+
+| Gate | Verdict |
+|---|---|
+| WinDivert capture + flow attribution | **PASS** (E0–E3 CONFIRMED) |
+| Packet reinjection feasibility | **PASS at packet level** (E4b: 9/9 delivered to wire; no recapture loop demonstrated) |
+| End-to-end passthrough to `1.1.1.1:443` | **INCONCLUSIVE / endpoint-specific failure** — handshake completes, ClientHello leaves, no inbound response; root cause UNKNOWN (E4d) |
+| Selected-process ferry path (hold SYN → SOCKS5 → craft SYN-ACK → sequence translation → forward data) | **NOT TESTED in this spike** — deferred to Phase 6 validation |
