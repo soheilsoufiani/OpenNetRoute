@@ -169,7 +169,9 @@ internal static class Experiment8b
             }
             else
             {
-                Console.WriteLine("[FAILED] No reply from the local test resolver within 3s.");
+                Console.WriteLine($"[FAILED] No reply from the local test resolver within 3s. " +
+                                  $"serverReceived={testResolver.Received} serverSent={testResolver.Sent} " +
+                                  $"serverError={(testResolver.LastError ?? "none")}");
             }
         }
         catch (Exception ex)
@@ -241,12 +243,22 @@ internal static class Experiment8b
 
     private sealed record DnsTestServer(int Port)
     {
+        /// <summary>Number of datagrams the server has received (diagnostics).</summary>
+        public long Received { get; set; }
+
+        /// <summary>Number of replies the server has sent (diagnostics).</summary>
+        public long Sent { get; set; }
+
+        /// <summary>The last server-side error, or null (diagnostics — no silent failure).</summary>
+        public string? LastError { get; set; }
+
         public static DnsTestServer? Start()
         {
             try
             {
                 var listener = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
                 var port = ((IPEndPoint)listener.Client.LocalEndPoint!).Port;
+                var server = new DnsTestServer(port);
                 _ = Task.Run(async () =>
                 {
                     try
@@ -254,18 +266,34 @@ internal static class Experiment8b
                         while (true)
                         {
                             var recv = await listener.ReceiveAsync();
-                            // Answer with a real reply: echo the query's ID and
-                            // question, set QR|RA, one A record 192.0.2.1.
+                            server.Received++;
+                            Console.WriteLine($"  [test-server] received {recv.Buffer.Length} bytes from {recv.RemoteEndPoint} (total={server.Received})");
                             var reply = BuildReply(recv.Buffer);
                             if (reply != null)
+                            {
                                 await listener.SendAsync(reply, reply.Length, recv.RemoteEndPoint);
+                                server.Sent++;
+                                Console.WriteLine($"  [test-server] sent {reply.Length} bytes to {recv.RemoteEndPoint} (total={server.Sent})");
+                            }
+                            else
+                            {
+                                Console.WriteLine($"  [test-server] could not build a reply for {recv.Buffer.Length}-byte query");
+                            }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        server.LastError = ex.ToString();
+                        Console.WriteLine($"[test-server] ERROR: {ex}");
+                    }
                 });
-                return new DnsTestServer(port);
+                return server;
             }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[test-server] START ERROR: {ex}");
+                return null;
+            }
         }
 
         /// <summary>Builds a DNS reply for the query: echoed ID+question, A=192.0.2.1.</summary>
