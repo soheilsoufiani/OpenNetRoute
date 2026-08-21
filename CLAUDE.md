@@ -657,6 +657,14 @@ Analyze:
 
 Do not claim "DNS leak protection" unless it has actually been tested.
 
+> **Design status:** see `docs/DNS-DESIGN.md` (design only — no implementation
+> yet). The ferry currently leaks DNS for the dominant real-world path
+> (applications that resolve hostnames locally send UDP 53 / DoH / DoT queries
+> the ferry never intercepts). The doc analyzes local vs remote resolution,
+> UDP 53 interception via SOCKS5 UDP ASSOCIATE, why name-based CONNECT alone
+> cannot close the leak, and the unavoidable DoH/DoT limitation. Phase 8 is the
+> next correctness/security priority (CLAUDE.md priority #6).
+
 ---
 
 # Phase 9 — IPv6
