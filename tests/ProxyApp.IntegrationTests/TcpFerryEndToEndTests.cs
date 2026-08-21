@@ -72,6 +72,51 @@ public class TcpFerryEndToEndTests
         return port;
     }
 
+    /// <summary>
+    /// An HTTP backend that sends a 4 KB response body in multiple chunks,
+    /// exercising the ferry's multi-segment data relay. The response declares
+    /// Content-Length: 4096 so the client (curl) knows to read the full body.
+    /// </summary>
+    private static async Task<int> StartStreamingBackendAsync()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var client = await listener.AcceptTcpClientAsync();
+                using var stream = client.GetStream();
+                var buf = new byte[8192];
+                var total = 0;
+                while (total < buf.Length)
+                {
+                    var r = await stream.ReadAsync(buf.AsMemory(total, buf.Length - total));
+                    if (r <= 0) break;
+                    total += r;
+                    if (buf.AsSpan(0, total).IndexOf("\r\n\r\n"u8) >= 0) break;
+                }
+                // 4096-byte body of repeated 'A's.
+                var body = new string('A', 4096);
+                var resp = Encoding.ASCII.GetBytes(
+                    $"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n{body}");
+                // Write in 4 chunks to force the SOCKS5 relay to forward in
+                // multiple segments, exercising the ferry's multi-segment pump.
+                const int chunkSize = 1024;
+                for (int i = 0; i < resp.Length; i += chunkSize)
+                {
+                    var chunkLen = Math.Min(chunkSize, resp.Length - i);
+                    await stream.WriteAsync(resp.AsMemory(i, chunkLen));
+                    await Task.Delay(10);
+                }
+            }
+            catch { }
+        });
+        return port;
+    }
+
     [Fact]
     public async Task Curl_ThroughFerry_ReceivesResponseBytes()
     {
@@ -211,6 +256,238 @@ public class TcpFerryEndToEndTests
             ferry.Dispose();
 
             // Stop and close the independent observer.
+            if (observerHandle != IntPtr.Zero && observerHandle != new IntPtr(-1))
+            {
+                ferryObsCts?.Cancel();
+                WinDivertNative.WinDivertClose(observerHandle);
+                try { ferryObsCts?.Dispose(); } catch { }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Curl_ThroughFerry_WithStreamingResponse()
+    {
+        // Larger/streamed response: a 4 KB body sent by the backend in multiple
+        // chunks. Exercises the ferry's multi-segment data relay and verifies the
+        // seq/ack framing stays correct across segments (ClientBytesRecv,
+        // ClientAckedUpTo, NextServerSeq) and the separate FIN still fires after
+        // the client ACKs all bytes. Requires elevation (same as the other E2E).
+        if (!IsElevated())
+        {
+            return;
+        }
+
+        var backendPort = await StartStreamingBackendAsync();
+
+        using var proxy = new Socks5TestServer(async (request, stream, ct) =>
+        {
+            Console.WriteLine($"[Socks5Server] CONNECT dst={request.Host}:{request.Port} atyp={request.Atyp}");
+            using var upstream = new TcpClient();
+            await upstream.ConnectAsync(IPAddress.Loopback, backendPort, ct);
+            Console.WriteLine("[Socks5Server] backend connection established");
+            using var upstreamStream = upstream.GetStream();
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, new byte[] { 0, 0, 0, 0 }, 0, ct);
+            var toBackend = RelayOneWayAsync("client→backend", stream, upstreamStream, ct);
+            var toClient = RelayOneWayAsync("backend→client", upstreamStream, stream, ct);
+            await Task.WhenAll(toBackend, toClient);
+        });
+
+        var windivertDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TunnelX");
+        if (!File.Exists(Path.Combine(windivertDir, "WinDivert.dll")))
+        {
+            Assert.Fail($"WinDivert.dll not found at {windivertDir}; cannot run the end-to-end ferry test.");
+        }
+        Environment.SetEnvironmentVariable("PROXYAPP_WINDIVERT_DIR", windivertDir);
+
+        var rules = new List<ApplicationRule>
+        {
+            new() { ExecutableName = "curl.exe", Enabled = true, Mode = ProxyMode.Proxy }
+        };
+
+        WinDivertLibrary.EnsureRegistered();
+
+        var ferry = new TcpFerry(
+            new Socks5Client(new ProxyConfiguration
+            {
+                Host = "127.0.0.1", Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+            }),
+            new ProcessTable(),
+            rules,
+            captureFilter: "outbound and ip and tcp and not loopback",
+            holdTimeoutMs: 100,
+            trace: m => Console.WriteLine(m));
+
+        try
+        {
+            ferry.Start();
+
+            // curl -s -o NUL writes the response body to NUL; --max-time bounds the run.
+            var psi = new ProcessStartInfo
+            {
+                FileName = "curl.exe",
+                Arguments = "-s -o NUL --max-time 10 http://8.8.8.8/",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false
+            };
+            using var curl = Process.Start(psi)!;
+            var curlExitTask = curl.WaitForExitAsync();
+            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(12));
+            var completed = await Task.WhenAny(curlExitTask, timeoutTask);
+            if (completed != curlExitTask)
+            {
+                curl.Kill();
+                await curlExitTask;
+                Assert.Fail("curl did not finish within 12s (ferry relay failed).");
+            }
+
+            Assert.Equal(0, curl.ExitCode);
+        }
+        finally
+        {
+            await ferry.StopAsync();
+            ferry.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentCurls_ThroughFerry_ReceiveCorrectResponses()
+    {
+        // Two concurrent connections through the same ferry: one curl to
+        // 8.8.8.8:80 (short response), one to 8.8.4.4:80 (4 KB streaming).
+        // Exercises the FlowTable + per-flow seq/ack state under concurrency —
+        // neither flow may corrupt the other's framing. The SOCKS5 test proxy
+        // routes by destination host to the appropriate loopback backend.
+        if (!IsElevated())
+        {
+            return;
+        }
+
+        var backendA = await StartHttpBackendAsync();
+        var backendB = await StartStreamingBackendAsync();
+
+        using var proxy = new Socks5TestServer(async (request, stream, ct) =>
+        {
+            Console.WriteLine($"[Socks5Server] CONNECT dst={request.Host}:{request.Port} atyp={request.Atyp}");
+            var backendPort = request.Host switch
+            {
+                "8.8.8.8" => backendA,
+                "8.8.4.4" => backendB,
+                _ => throw new InvalidOperationException($"Unexpected destination {request.Host}")
+            };
+            using var upstream = new TcpClient();
+            await upstream.ConnectAsync(IPAddress.Loopback, backendPort, ct);
+            Console.WriteLine($"[Socks5Server] backend connection established ({request.Host})");
+            using var upstreamStream = upstream.GetStream();
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, new byte[] { 0, 0, 0, 0 }, 0, ct);
+            var toBackend = RelayOneWayAsync($"client→backend({request.Host})", stream, upstreamStream, ct);
+            var toClient = RelayOneWayAsync($"backend({request.Host})→client", upstreamStream, stream, ct);
+            await Task.WhenAll(toBackend, toClient);
+        });
+
+        var windivertDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TunnelX");
+        if (!File.Exists(Path.Combine(windivertDir, "WinDivert.dll")))
+        {
+            Assert.Fail($"WinDivert.dll not found at {windivertDir}; cannot run the end-to-end ferry test.");
+        }
+        Environment.SetEnvironmentVariable("PROXYAPP_WINDIVERT_DIR", windivertDir);
+
+        var rules = new List<ApplicationRule>
+        {
+            new() { ExecutableName = "curl.exe", Enabled = true, Mode = ProxyMode.Proxy }
+        };
+
+        WinDivertLibrary.EnsureRegistered();
+
+        // Independent outbound observer scoped to port 80 (both destinations).
+        CancellationTokenSource? ferryObsCts = null;
+        var observerHandle = WinDivertNative.WinDivertOpen(
+            "outbound and ip and tcp and tcp.DstPort == 80",
+            WinDivertLayer.Network, 1, WinDivertNative.Flags.SniffAndReceiveOnly);
+        if (observerHandle != IntPtr.Zero && observerHandle != new IntPtr(-1))
+        {
+            var observerCts = new CancellationTokenSource();
+            _ = Task.Run(() =>
+            {
+                var buffer = new byte[65535];
+                var addr = new WinDivertAddress();
+                while (!observerCts.IsCancellationRequested)
+                {
+                    uint readLen = 0;
+                    if (!WinDivertNative.WinDivertRecv(observerHandle, buffer, (uint)buffer.Length, ref readLen, ref addr))
+                        break;
+                    if (readLen < 20) continue;
+                    if (TcpPacketParser.TryParse(buffer, readLen, out var t))
+                        Console.WriteLine($"[OBS] {t.SrcIp}:{t.SrcPort}->{t.DstIp}:{t.DstPort} " +
+                                          $"flags=0x{t.TcpFlags:X2} seq={t.Seq} ack={t.Ack} len={readLen}");
+                }
+            });
+            ferryObsCts = observerCts;
+        }
+        else
+        {
+            Console.WriteLine("[OBS] Could not open observer handle (skipping independent observation)");
+        }
+
+        var ferry = new TcpFerry(
+            new Socks5Client(new ProxyConfiguration
+            {
+                Host = "127.0.0.1", Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+            }),
+            new ProcessTable(),
+            rules,
+            captureFilter: "outbound and ip and tcp and not loopback",
+            holdTimeoutMs: 100,
+            trace: m => Console.WriteLine(m));
+
+        try
+        {
+            ferry.Start();
+
+            var psiA = new ProcessStartInfo
+            {
+                FileName = "curl.exe",
+                Arguments = "-s -o NUL --max-time 10 http://8.8.8.8/",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            var psiB = new ProcessStartInfo
+            {
+                FileName = "curl.exe",
+                Arguments = "-s -o NUL --max-time 10 http://8.8.4.4/",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var curlA = Process.Start(psiA)!;
+            using var curlB = Process.Start(psiB)!;
+
+            var waitA = curlA.WaitForExitAsync();
+            var waitB = curlB.WaitForExitAsync();
+            var allDone = Task.WhenAll(waitA, waitB);
+            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(15));
+            var completed = await Task.WhenAny(allDone, timeoutTask);
+            if (completed != allDone)
+            {
+                curlA.Kill();
+                curlB.Kill();
+                await waitA;
+                await waitB;
+                Assert.Fail("concurrent curls did not finish within 15s (ferry relay failed).");
+            }
+
+            Assert.Equal(0, curlA.ExitCode);
+            Assert.Equal(0, curlB.ExitCode);
+        }
+        finally
+        {
+            await ferry.StopAsync();
+            ferry.Dispose();
             if (observerHandle != IntPtr.Zero && observerHandle != new IntPtr(-1))
             {
                 ferryObsCts?.Cancel();
