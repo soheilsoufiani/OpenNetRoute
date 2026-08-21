@@ -28,7 +28,7 @@ public sealed class ProcessTable : IConnectionProcessResolver
         {
             using var proc = Process.GetProcessById(pid.Value);
             var name = proc.ProcessName + ".exe";
-            return new ConnectionProcessInfo(pid.Value, name);
+            return new ConnectionProcessInfo(pid.Value, name, proc.MainModule?.FileName);
         }
         catch
         {

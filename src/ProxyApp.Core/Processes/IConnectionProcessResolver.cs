@@ -23,4 +23,11 @@ public interface IConnectionProcessResolver
 /// <summary>
 /// Process identity information for a resolved connection.
 /// </summary>
-public readonly record struct ConnectionProcessInfo(int ProcessId, string ExecutableName);
+/// <param name="ProcessId">The owning process ID.</param>
+/// <param name="ExecutableName">The executable name, e.g. "curl.exe".</param>
+/// <param name="ExecutablePath">
+/// The full executable path, or null when it cannot be read (access denied or
+/// the process exited between table lookup and path read).
+/// </param>
+public readonly record struct ConnectionProcessInfo(
+    int ProcessId, string ExecutableName, string? ExecutablePath = null);

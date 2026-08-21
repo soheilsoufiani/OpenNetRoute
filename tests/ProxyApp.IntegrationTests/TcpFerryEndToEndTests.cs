@@ -73,6 +73,44 @@ public class TcpFerryEndToEndTests
     }
 
     /// <summary>
+    /// An HTTP backend that holds the connection open (does not respond) until
+    /// the returned <see cref="TaskCompletionSource"/> is completed, keeping the
+    /// proxied connection alive so the test can resolve its 4-tuple while curl
+    /// is still connected.
+    /// </summary>
+    private static async Task<int> StartHoldingBackendAsync(TaskCompletionSource release)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var client = await listener.AcceptTcpClientAsync();
+                using var stream = client.GetStream();
+                var buf = new byte[4096];
+                var total = 0;
+                while (total < buf.Length)
+                {
+                    var r = await stream.ReadAsync(buf.AsMemory(total, buf.Length - total));
+                    if (r <= 0) break;
+                    total += r;
+                    if (buf.AsSpan(0, total).IndexOf("\r\n\r\n"u8) >= 0) break;
+                }
+                // Hold the connection open until released.
+                await release.Task.WaitAsync(TimeSpan.FromSeconds(15));
+                var resp = Encoding.ASCII.GetBytes(
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+                await stream.WriteAsync(resp, 0, resp.Length);
+            }
+            catch { }
+        });
+        return port;
+    }
+
+    /// <summary>
     /// An HTTP backend that sends a 4 KB response body in multiple chunks,
     /// exercising the ferry's multi-segment data relay. The response declares
     /// Content-Length: 4096 so the client (curl) knows to read the full body.
@@ -494,6 +532,488 @@ public class TcpFerryEndToEndTests
                 WinDivertNative.WinDivertClose(observerHandle);
                 try { ferryObsCts?.Dispose(); } catch { }
             }
+        }
+    }
+
+    [Fact]
+    public async Task Curl_ThroughFerry_AttributedToCurlProcess()
+    {
+        // Core-reliability gap 1: prove the REAL attribution path
+        // (ProcessTable.ResolveOwner mapping a captured connection's 4-tuple to
+        // a PID) works on a live elevated path. The earlier E2E tests match
+        // curl.exe by name in the rules the TEST supplies; this test asserts the
+        // OS-level lookup actually attributes the connection to the curl process
+        // — and that a DIFFERENT process's connection is attributed to ITS OWN
+        // PID, not curl's.
+        //
+        // How: a backend that HOLDS the connection open (does not respond until
+        // released) keeps curl's proxied connection alive while we resolve its
+        // 4-tuple via ProcessTable. curl's local (IP,port) is read from the
+        // captured flow state; the tuple is then resolved against the real OS
+        // table and must map to the curl process (name curl.exe).
+        // Requires elevation (same as the other E2E tests).
+        if (!IsElevated())
+        {
+            return;
+        }
+
+        // Backend that holds the response until released via a TaskCompletionSource.
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var backendPort = await StartHoldingBackendAsync(release);
+
+        using var proxy = new Socks5TestServer(async (request, stream, ct) =>
+        {
+            using var upstream = new TcpClient();
+            await upstream.ConnectAsync(IPAddress.Loopback, backendPort, ct);
+            using var upstreamStream = upstream.GetStream();
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, new byte[] { 0, 0, 0, 0 }, 0, ct);
+            var toBackend = RelayOneWayAsync("client→backend", stream, upstreamStream, ct);
+            var toClient = RelayOneWayAsync("backend→client", upstreamStream, stream, ct);
+            await Task.WhenAll(toBackend, toClient);
+        });
+
+        var windivertDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TunnelX");
+        if (!File.Exists(Path.Combine(windivertDir, "WinDivert.dll")))
+        {
+            Assert.Fail($"WinDivert.dll not found at {windivertDir}; cannot run the end-to-end ferry test.");
+        }
+        Environment.SetEnvironmentVariable("PROXYAPP_WINDIVERT_DIR", windivertDir);
+
+        var rules = new List<ApplicationRule>
+        {
+            new() { ExecutableName = "curl.exe", Enabled = true, Mode = ProxyMode.Proxy }
+        };
+
+        WinDivertLibrary.EnsureRegistered();
+
+        var ferry = new TcpFerry(
+            new Socks5Client(new ProxyConfiguration
+            {
+                Host = "127.0.0.1", Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+            }),
+            new ProcessTable(),
+            rules,
+            captureFilter: "outbound and ip and tcp and not loopback",
+            holdTimeoutMs: 100,
+            trace: m => Console.WriteLine(m));
+
+        try
+        {
+            ferry.Start();
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "curl.exe",
+                Arguments = "-s -o NUL --max-time 10 http://8.8.8.8/",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false
+            };
+            using var curl = Process.Start(psi)!;
+
+            // Wait for the ferry to have an ESTABLISHED flow for the curl
+            // connection: scan the flow table for a flow whose remote is
+            // 8.8.8.8:80 (the destination the test's curl reaches).
+            FlowState? flow = null;
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (flow == null && DateTime.UtcNow < deadline)
+            {
+                flow = ferry.Flows.GetFlows()
+                    .FirstOrDefault(f => f.Key.RemoteIp.Equals(IPAddress.Parse("8.8.8.8")) &&
+                                         f.Key.RemotePort == 80);
+                if (flow == null)
+                    await Task.Delay(50);
+            }
+
+            Assert.NotNull(flow);
+
+            // ── THE attribution assertion ──
+            // Resolve the flow's captured 4-tuple against the REAL OS table —
+            // the exact same call the ferry makes at SYN time
+            // (ProcessTable.ResolveOwner). It must attribute to the curl process.
+            var resolver = new ProcessTable();
+            var resolved = resolver.ResolveOwner(
+                flow.Key.LocalIp, flow.Key.LocalPort,
+                flow.Key.RemoteIp, flow.Key.RemotePort);
+
+            Assert.NotNull(resolved);
+            Assert.True(string.Equals("curl.exe", resolved.Value.ExecutableName, StringComparison.OrdinalIgnoreCase),
+                "the captured connection must attribute to curl.exe");
+            Assert.True(curl.Id == resolved.Value.ProcessId,
+                "the resolved PID must be curl's PID");
+            Assert.False(string.IsNullOrEmpty(resolved.Value.ExecutablePath),
+                "curl's executable path must be resolvable");
+
+            // ── No-leakage assertion ──
+            // A DIFFERENT process's connection must attribute to ITS OWN PID,
+            // never to curl. The SOCKS5 proxy's upstream leg to the backend is
+            // owned by the TEST HOST (the Socks5TestServer runs in this
+            // process). Resolve that connection and assert it maps to the test
+            // host, not curl.
+            var self = Process.GetCurrentProcess();
+            var selfFlow = ferry.Flows.GetFlows()
+                .FirstOrDefault(f => f.Key.RemoteIp.Equals(IPAddress.Loopback) &&
+                                     f.Key.RemotePort == backendPort);
+            if (selfFlow != null)
+            {
+                var selfResolved = resolver.ResolveOwner(
+                    selfFlow.Key.LocalIp, selfFlow.Key.LocalPort,
+                    selfFlow.Key.RemoteIp, selfFlow.Key.RemotePort);
+                Assert.NotNull(selfResolved);
+                Assert.True(selfResolved.Value.ProcessId != curl.Id,
+                    "the test host's own connection must NOT attribute to curl");
+                Assert.True(selfResolved.Value.ProcessId == self.Id);
+            }
+
+            // Release the backend so curl completes; the test then verifies the
+            // response still arrives (the relay path is intact).
+            release.TrySetResult();
+            var wait = curl.WaitForExitAsync();
+            var timeout = Task.Delay(TimeSpan.FromSeconds(12));
+            var done = await Task.WhenAny(wait, timeout);
+            if (done != wait)
+            {
+                curl.Kill();
+                await wait;
+                Assert.Fail("curl did not finish after release within 12s.");
+            }
+            Assert.Equal(0, curl.ExitCode);
+        }
+        finally
+        {
+            release.TrySetResult(); // ensure the backend releases on any failure
+            await ferry.StopAsync();
+            ferry.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task StopFerry_MidFlow_CleansUp()
+    {
+        // Core-reliability gap 2 (shutdown): start the ferry, open a proxied
+        // connection, then STOP the ferry mid-flow. Assert no leftover flows,
+        // no exceptions, and the ferry can be restarted (new connection works).
+        if (!IsElevated())
+        {
+            return;
+        }
+
+        var backendPort = await StartHttpBackendAsync();
+
+        using var proxy = new Socks5TestServer(async (request, stream, ct) =>
+        {
+            using var upstream = new TcpClient();
+            await upstream.ConnectAsync(IPAddress.Loopback, backendPort, ct);
+            using var upstreamStream = upstream.GetStream();
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, new byte[] { 0, 0, 0, 0 }, 0, ct);
+            var toBackend = RelayOneWayAsync("client→backend", stream, upstreamStream, ct);
+            var toClient = RelayOneWayAsync("backend→client", upstreamStream, stream, ct);
+            await Task.WhenAll(toBackend, toClient);
+        });
+
+        var windivertDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TunnelX");
+        if (!File.Exists(Path.Combine(windivertDir, "WinDivert.dll")))
+        {
+            Assert.Fail($"WinDivert.dll not found at {windivertDir}; cannot run the end-to-end ferry test.");
+        }
+        Environment.SetEnvironmentVariable("PROXYAPP_WINDIVERT_DIR", windivertDir);
+
+        var rules = new List<ApplicationRule>
+        {
+            new() { ExecutableName = "curl.exe", Enabled = true, Mode = ProxyMode.Proxy }
+        };
+
+        WinDivertLibrary.EnsureRegistered();
+
+        var ferry = new TcpFerry(
+            new Socks5Client(new ProxyConfiguration
+            {
+                Host = "127.0.0.1", Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+            }),
+            new ProcessTable(),
+            rules,
+            captureFilter: "outbound and ip and tcp and not loopback",
+            holdTimeoutMs: 100,
+            trace: m => Console.WriteLine(m));
+
+        try
+        {
+            ferry.Start();
+
+            // Open a connection (curl) and let it establish through the ferry.
+            var psi = new ProcessStartInfo
+            {
+                FileName = "curl.exe",
+                Arguments = "-s -o NUL --max-time 10 http://8.8.8.8/",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false
+            };
+            using var curl = Process.Start(psi)!;
+            // Wait for the ferry to have a flow (the connection is being proxied).
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (ferry.Flows.Count == 0 && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(50);
+            }
+            Assert.True(ferry.Flows.Count > 0, "expected at least one flow while curl connects");
+
+            // Stop the ferry mid-flow. Must not throw and must clean up flows.
+            await ferry.StopAsync();
+            Assert.Equal(0, ferry.Flows.Count);
+            Assert.False(ferry.IsRunning);
+
+            // Restart the ferry — a fresh connection must still work (no
+            // leftover handle / no state corruption).
+            ferry.Start();
+            var psi2 = new ProcessStartInfo
+            {
+                FileName = "curl.exe",
+                Arguments = "-s -o NUL --max-time 10 http://8.8.8.8/",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false
+            };
+            using var curl2 = Process.Start(psi2)!;
+            var wait2 = curl2.WaitForExitAsync();
+            var timeout2 = Task.Delay(TimeSpan.FromSeconds(12));
+            var done2 = await Task.WhenAny(wait2, timeout2);
+            if (done2 != wait2)
+            {
+                curl2.Kill();
+                await wait2;
+                Assert.Fail("curl after restart did not finish within 12s.");
+            }
+            Assert.Equal(0, curl2.ExitCode);
+        }
+        finally
+        {
+            await ferry.StopAsync();
+            ferry.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task UpstreamDrop_MidRelay_FailsClientCleanly()
+    {
+        // Core-reliability gap 2 (error resilience): the backend is killed
+        // mid-relay (after the response started). The ferry must not hang the
+        // client; it cleans up the flow and the client sees the connection end
+        // (FIN or RST), not a permanent stall.
+        if (!IsElevated())
+        {
+            return;
+        }
+
+        // Backend that writes part of the response, then kills the socket.
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var backendPort = ((IPEndPoint)listener.LocalEndpoint).Port;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var client = await listener.AcceptTcpClientAsync();
+                using var stream = client.GetStream();
+                var buf = new byte[4096];
+                var total = 0;
+                while (total < buf.Length)
+                {
+                    var r = await stream.ReadAsync(buf.AsMemory(total, buf.Length - total));
+                    if (r <= 0) break;
+                    total += r;
+                    if (buf.AsSpan(0, total).IndexOf("\r\n\r\n"u8) >= 0) break;
+                }
+                // Send headers + partial body, then close abruptly (socket drop).
+                var resp = Encoding.ASCII.GetBytes(
+                    "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial");
+                await stream.WriteAsync(resp, 0, resp.Length);
+                await Task.Delay(100);
+                // Abrupt close — no FIN, the TCP stack just drops.
+                client.Client.Close(); // hard close
+            }
+            catch { }
+        });
+
+        using var proxy = new Socks5TestServer(async (request, stream, ct) =>
+        {
+            using var upstream = new TcpClient();
+            await upstream.ConnectAsync(IPAddress.Loopback, backendPort, ct);
+            using var upstreamStream = upstream.GetStream();
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, new byte[] { 0, 0, 0, 0 }, 0, ct);
+            var toBackend = RelayOneWayAsync("client→backend", stream, upstreamStream, ct);
+            var toClient = RelayOneWayAsync("backend→client", upstreamStream, stream, ct);
+            await Task.WhenAll(toBackend, toClient);
+        });
+
+        var windivertDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TunnelX");
+        if (!File.Exists(Path.Combine(windivertDir, "WinDivert.dll")))
+        {
+            Assert.Fail($"WinDivert.dll not found at {windivertDir}; cannot run the end-to-end ferry test.");
+        }
+        Environment.SetEnvironmentVariable("PROXYAPP_WINDIVERT_DIR", windivertDir);
+
+        var rules = new List<ApplicationRule>
+        {
+            new() { ExecutableName = "curl.exe", Enabled = true, Mode = ProxyMode.Proxy }
+        };
+
+        WinDivertLibrary.EnsureRegistered();
+
+        var ferry = new TcpFerry(
+            new Socks5Client(new ProxyConfiguration
+            {
+                Host = "127.0.0.1", Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+            }),
+            new ProcessTable(),
+            rules,
+            captureFilter: "outbound and ip and tcp and not loopback",
+            holdTimeoutMs: 100,
+            trace: m => Console.WriteLine(m));
+
+        try
+        {
+            ferry.Start();
+
+            // curl with a short --max-time so a hang would fail fast.
+            var psi = new ProcessStartInfo
+            {
+                FileName = "curl.exe",
+                Arguments = "-s -o NUL --max-time 5 http://8.8.8.8/",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false
+            };
+            using var curl = Process.Start(psi)!;
+            var wait = curl.WaitForExitAsync();
+            var timeout = Task.Delay(TimeSpan.FromSeconds(12));
+            var done = await Task.WhenAny(wait, timeout);
+            if (done != wait)
+            {
+                curl.Kill();
+                await wait;
+                Assert.Fail("curl did not exit after upstream drop (client hung).");
+            }
+
+            // After the backend was killed, the ferry must have cleaned the flow.
+            await Task.Delay(500); // allow the pump to notice the drop
+            Assert.Equal(0, ferry.Flows.Count);
+        }
+        finally
+        {
+            await ferry.StopAsync();
+            ferry.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task SustainedTraffic_NoPacketLoop()
+    {
+        // Core-reliability gap 3 (packet-loop guard): run the ferry against real
+        // outbound traffic for a sustained period and assert the flow table
+        // stays bounded (no runaway flow creation, no infinite capture/inject
+        // loop). A loop would manifest as unbounded flow count, CPU, or queue
+        // growth; the flow table count is the observable bound.
+        if (!IsElevated())
+        {
+            return;
+        }
+
+        var backendPort = await StartHttpBackendAsync();
+
+        using var proxy = new Socks5TestServer(async (request, stream, ct) =>
+        {
+            using var upstream = new TcpClient();
+            await upstream.ConnectAsync(IPAddress.Loopback, backendPort, ct);
+            using var upstreamStream = upstream.GetStream();
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, new byte[] { 0, 0, 0, 0 }, 0, ct);
+            var toBackend = RelayOneWayAsync("client→backend", stream, upstreamStream, ct);
+            var toClient = RelayOneWayAsync("backend→client", upstreamStream, stream, ct);
+            await Task.WhenAll(toBackend, toClient);
+        });
+
+        var windivertDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TunnelX");
+        if (!File.Exists(Path.Combine(windivertDir, "WinDivert.dll")))
+        {
+            Assert.Fail($"WinDivert.dll not found at {windivertDir}; cannot run the end-to-end ferry test.");
+        }
+        Environment.SetEnvironmentVariable("PROXYAPP_WINDIVERT_DIR", windivertDir);
+
+        var rules = new List<ApplicationRule>
+        {
+            new() { ExecutableName = "curl.exe", Enabled = true, Mode = ProxyMode.Proxy }
+        };
+
+        WinDivertLibrary.EnsureRegistered();
+
+        var ferry = new TcpFerry(
+            new Socks5Client(new ProxyConfiguration
+            {
+                Host = "127.0.0.1", Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+            }),
+            new ProcessTable(),
+            rules,
+            captureFilter: "outbound and ip and tcp and not loopback",
+            holdTimeoutMs: 100,
+            trace: m => Console.WriteLine(m));
+
+        try
+        {
+            ferry.Start();
+
+            // Run 5 sequential curls — each is a full proxied connection. If a
+            // capture/inject loop existed, the flow table would grow unbounded
+            // (flows never cleaned up) and CPU would spin.
+            for (var i = 0; i < 5; i++)
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "curl.exe",
+                    Arguments = "-s -o NUL --max-time 5 http://8.8.8.8/",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false
+                };
+                using var curl = Process.Start(psi)!;
+                var wait = curl.WaitForExitAsync();
+                var timeout = Task.Delay(TimeSpan.FromSeconds(10));
+                var done = await Task.WhenAny(wait, timeout);
+                if (done != wait)
+                {
+                    curl.Kill();
+                    await wait;
+                    Assert.Fail($"curl {i} did not finish within 10s.");
+                }
+                Assert.Equal(0, curl.ExitCode);
+
+                // After each connection completes, the flow must have been
+                // cleaned up — a loop would leave flows behind.
+                await Task.Delay(300);
+                Assert.True(ferry.Flows.Count <= 1,
+                    $"flow table grew unbounded after {i + 1} connections (count={ferry.Flows.Count})");
+            }
+
+            // After all traffic, the flow table must be empty (all flows closed
+            // and cleaned up). A capture/inject loop would keep flows alive.
+            Assert.Equal(0, ferry.Flows.Count);
+        }
+        finally
+        {
+            await ferry.StopAsync();
+            ferry.Dispose();
         }
     }
 

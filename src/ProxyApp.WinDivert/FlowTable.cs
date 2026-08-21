@@ -20,6 +20,9 @@ internal sealed class FlowTable
     /// <summary>Returns the flow for the key, or null if absent.</summary>
     public FlowState? Get(FlowKey key) => _flows.TryGetValue(key, out var flow) ? flow : null;
 
+    /// <summary>Returns a snapshot of all live flows (for diagnostics and tests).</summary>
+    public IReadOnlyList<FlowState> GetFlows() => _flows.Values.ToList();
+
     /// <summary>Adds a flow, returning true if it was newly added.</summary>
     public bool TryAdd(FlowKey key, FlowState flow) => _flows.TryAdd(key, flow);
 
