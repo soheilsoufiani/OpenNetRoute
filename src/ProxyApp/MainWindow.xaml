@@ -3,10 +3,93 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:ProxyApp"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
+        Title="MyProxy" Height="560" Width="680" MinHeight="480" MinWidth="600">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
 
+        <!-- SOCKS5 Proxy configuration -->
+        <GroupBox Grid.Row="0" Header="SOCKS5 Proxy" Padding="8" Margin="0,0,0,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Host:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <TextBox x:Name="ProxyHostBox" Grid.Row="0" Grid.Column="1" Margin="0,0,12,4"/>
+
+                <TextBlock Grid.Row="0" Grid.Column="2" Text="Port:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <TextBox x:Name="ProxyPortBox" Grid.Row="0" Grid.Column="3" Margin="0,0,0,4" Text="1080"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Username:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <TextBox x:Name="ProxyUsernameBox" Grid.Row="1" Grid.Column="1" Margin="0,0,12,0"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="2" Text="Password:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <PasswordBox x:Name="ProxyPasswordBox" Grid.Row="1" Grid.Column="3"/>
+            </Grid>
+        </GroupBox>
+
+        <!-- Applications / rules -->
+        <GroupBox Grid.Row="1" Header="Applications" Padding="8" Margin="0,0,0,8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Select applications to route. Leave unchecked for Direct."
+                               VerticalAlignment="Center" Margin="0,0,0,6" Foreground="Gray"/>
+                    <Button Grid.Column="1" x:Name="RefreshButton" Content="Refresh" Margin="0,0,0,6" Padding="12,2" Click="OnRefreshClicked"/>
+                </Grid>
+
+                <ListView x:Name="ProcessList" Grid.Row="1" Height="220" BorderThickness="1">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Route" Width="70">
+                                <GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox IsChecked="{Binding RouteViaProxy}"
+                                                  ToolTip="Route through the SOCKS5 proxy"/>
+                                    </DataTemplate>
+                                </GridViewColumn.CellTemplate>
+                            </GridViewColumn>
+                            <GridViewColumn Header="Process" Width="220"
+                                            DisplayMemberBinding="{Binding ProcessName}"/>
+                            <GridViewColumn Header="Path" Width="300"
+                                            DisplayMemberBinding="{Binding ProcessPath}"/>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Grid>
+        </GroupBox>
+
+        <!-- Status + controls -->
+        <TextBlock x:Name="StatusText" Grid.Row="3" Margin="0,4,0,8" TextWrapping="Wrap"
+                   Text="Status: Stopped" Foreground="Gray"/>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="StartButton" Content="START" Padding="16,4" Margin="0,0,8,0"
+                    IsDefault="True" Click="OnStartClicked"/>
+            <Button x:Name="StopButton" Content="STOP" Padding="16,4" IsEnabled="False"
+                    Click="OnStopClicked"/>
+        </StackPanel>
     </Grid>
 </Window>
