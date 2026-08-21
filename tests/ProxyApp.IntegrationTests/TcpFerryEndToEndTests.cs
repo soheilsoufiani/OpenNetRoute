@@ -55,25 +55,32 @@ public class TcpFerryEndToEndTests
             {
                 while (true)
                 {
-                    using var client = await listener.AcceptTcpClientAsync();
+                    var client = await listener.AcceptTcpClientAsync();
                     _ = Task.Run(async () =>
                     {
                         try
                         {
-                            using var stream = client.GetStream();
-                            var buf = new byte[4096];
-                            // Consume the HTTP request (partial reads are fine).
-                            var total = 0;
-                            while (total < buf.Length)
+                            // The using MUST live inside the handler task — a
+                            // using on the accept loop would dispose the client
+                            // as soon as the loop iterates, closing the backend
+                            // before the request arrives.
+                            using (client)
+                            using (var stream = client.GetStream())
                             {
-                                var r = await stream.ReadAsync(buf.AsMemory(total, buf.Length - total));
-                                if (r <= 0) break;
-                                total += r;
-                                if (buf.AsSpan(0, total).IndexOf("\r\n\r\n"u8) >= 0) break;
+                                var buf = new byte[4096];
+                                // Consume the HTTP request (partial reads are fine).
+                                var total = 0;
+                                while (total < buf.Length)
+                                {
+                                    var r = await stream.ReadAsync(buf.AsMemory(total, buf.Length - total));
+                                    if (r <= 0) break;
+                                    total += r;
+                                    if (buf.AsSpan(0, total).IndexOf("\r\n\r\n"u8) >= 0) break;
+                                }
+                                var resp = Encoding.ASCII.GetBytes(
+                                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+                                await stream.WriteAsync(resp, 0, resp.Length);
                             }
-                            var resp = Encoding.ASCII.GetBytes(
-                                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
-                            await stream.WriteAsync(resp, 0, resp.Length);
                         }
                         catch { }
                     });
