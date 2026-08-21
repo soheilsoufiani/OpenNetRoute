@@ -316,11 +316,21 @@ internal sealed class TcpFerry : IDisposable
         flow.LoopCts = pumpCts;
         var task = Task.Run(() => UpstreamReadPumpAsync(flow, clientSynTuple, pumpCts.Token), pumpCts.Token);
 
-        // If the pump exits, clean up the flow unless we're shutting down.
+        // Safety net for abnormal exits: if the pump ends and the client's FIN
+        // never arrives (upstream error, client vanished, or the pump was
+        // cancelled before it started), the graceful-close path never runs and
+        // the flow would leak. Clean up only when the flow is still Closing and
+        // still in the table. During a NORMAL close the client-FIN handler
+        // removes the flow first, so this becomes a no-op.
         _ = task.ContinueWith(_ =>
         {
-            if (_isRunning && flow.Status == FlowStatus.Established)
+            if (_isRunning &&
+                flow.Status == FlowStatus.Closing &&
+                _flowTable.Contains(flow.Key))
+            {
+                Trace($"Pump exited without client FIN — cleaning up {flow.Key}");
                 CleanupFlow(flow.Key, flow);
+            }
         }, TaskScheduler.Default);
     }
 
@@ -338,6 +348,7 @@ internal sealed class TcpFerry : IDisposable
     {
         var buffer = new byte[16384];
         var upstreamEof = false;
+        var upstreamError = false;
         Trace($"Upstream pump starting for {flow.Key} " +
               $"(ServerIsn={flow.ServerIsn}, ClientIsn={flow.ClientIsn}, " +
               $"ClientBytesSent={flow.ClientBytesSent}, ClientBytesRecv={flow.ClientBytesRecv})");
@@ -403,28 +414,48 @@ internal sealed class TcpFerry : IDisposable
         catch (Exception ex)
         {
             Trace($"Upstream read pump error for {flow.Key}: {ex.Message}");
+            upstreamError = true;
         }
         finally
         {
-            if (flow.Status == FlowStatus.Established)
+            if (flow.Status == FlowStatus.Established || flow.Status == FlowStatus.Closing)
             {
                 flow.Status = FlowStatus.Closing;
 
-                // The upstream leg has closed (EOF) or errored. Deliver the
-                // server's close to the client as a SEPARATE FIN|ACK — never
-                // piggybacked on data (that set FIN on every segment and could
-                // break the close on clients that treat data+FIN specially).
-                //
-                // The FIN is only sent once the client has ACKed every byte we
-                // injected; its seq is the next server send-seq (which consumes
-                // the FIN's own sequence number). The client's FIN, received
-                // later, is ACKed by the capture loop (see
-                // HandleExistingFlowAsync). This is a standard graceful close:
-                //   client → FIN (observed) → we ACK it → client exits.
-                if (upstreamEof)
+                if (upstreamError)
                 {
+                    // The upstream leg failed mid-relay (e.g. the backend was
+                    // killed). The client can never ACK the truncated data, so a
+                    // graceful FIN-wait is futile and would hang the client.
+                    // Fail the connection with a RST and remove the flow now —
+                    // no silent hang, no leaked flow.
+                    Trace($"Upstream error — injecting RST to client for {flow.Key}");
+                    InjectRstToClient(clientSynTuple, flow);
+                    CleanupFlow(flow.Key, flow);
+                }
+                else if (upstreamEof)
+                {
+                    // The upstream leg closed cleanly. Deliver the server's close
+                    // to the client as a SEPARATE FIN|ACK — never piggybacked on
+                    // data (that set FIN on every segment and could break the
+                    // close on clients that treat data+FIN specially).
+                    //
+                    // The FIN is only sent once the client has ACKed every byte
+                    // we injected; its seq is the next server send-seq (which
+                    // consumes the FIN's own sequence number). The client's FIN,
+                    // received later, is ACKed by the capture loop (see
+                    // HandleExistingFlowAsync). This is a standard graceful
+                    // close: client → FIN (observed) → we ACK it → client exits.
+                    //
+                    // NOTE: the flow is NOT removed here — the client's FIN must
+                    // still reach HandleExistingFlowAsync so it can be ACKed (the
+                    // last step of the graceful close). Final cleanup happens in
+                    // the client-FIN path; the ContinueWith in
+                    // StartUpstreamReadPump is the safety net for abnormal exits.
                     await InjectFinAfterAckAsync(flow, clientSynTuple, ct);
                 }
+                // Neither EOF nor error (e.g. WinDivertSend failed): the flow is
+                // left Closing for the ContinueWith safety net to clean up.
             }
         }
     }
@@ -562,6 +593,12 @@ internal sealed class TcpFerry : IDisposable
                 flow.Touch();
                 InjectAckToClient(flow, tuple);
                 Trace("Client sent FIN — ACKed; flow is closing");
+                // The client has closed its side; the connection is done. Remove
+                // the flow from the table so it cannot leak (previously every
+                // completed connection left a Closing-state flow behind,
+                // accumulating indefinitely — caught by the
+                // SustainedTraffic_NoPacketLoop elevated test).
+                CleanupFlow(flow.Key, flow);
                 return;
             }
 

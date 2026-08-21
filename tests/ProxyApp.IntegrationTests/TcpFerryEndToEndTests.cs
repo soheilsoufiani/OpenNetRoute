@@ -40,7 +40,9 @@ public class TcpFerryEndToEndTests
             .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
     }
 
-    /// <summary>An HTTP backend that the local SOCKS5 proxy forwards to.</summary>
+    /// <summary>An HTTP backend that the local SOCKS5 proxy forwards to.
+    /// Accepts MULTIPLE sequential connections (each test's curls may reconnect,
+    /// e.g. a ferry restart in StopFerry_MidFlow_CleansUp).</summary>
     private static async Task<int> StartHttpBackendAsync()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -51,21 +53,31 @@ public class TcpFerryEndToEndTests
         {
             try
             {
-                using var client = await listener.AcceptTcpClientAsync();
-                using var stream = client.GetStream();
-                var buf = new byte[4096];
-                // Consume the HTTP request (partial reads are fine for a test).
-                var total = 0;
-                while (total < buf.Length)
+                while (true)
                 {
-                    var r = await stream.ReadAsync(buf.AsMemory(total, buf.Length - total));
-                    if (r <= 0) break;
-                    total += r;
-                    if (buf.AsSpan(0, total).IndexOf("\r\n\r\n"u8) >= 0) break;
+                    using var client = await listener.AcceptTcpClientAsync();
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            using var stream = client.GetStream();
+                            var buf = new byte[4096];
+                            // Consume the HTTP request (partial reads are fine).
+                            var total = 0;
+                            while (total < buf.Length)
+                            {
+                                var r = await stream.ReadAsync(buf.AsMemory(total, buf.Length - total));
+                                if (r <= 0) break;
+                                total += r;
+                                if (buf.AsSpan(0, total).IndexOf("\r\n\r\n"u8) >= 0) break;
+                            }
+                            var resp = Encoding.ASCII.GetBytes(
+                                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+                            await stream.WriteAsync(resp, 0, resp.Length);
+                        }
+                        catch { }
+                    });
                 }
-                var resp = Encoding.ASCII.GetBytes(
-                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
-                await stream.WriteAsync(resp, 0, resp.Length);
             }
             catch { }
         });
@@ -906,7 +918,11 @@ public class TcpFerryEndToEndTests
             }
 
             // After the backend was killed, the ferry must have cleaned the flow.
-            await Task.Delay(500); // allow the pump to notice the drop
+            // The cleanup is asynchronous (pump error → RST + cleanup); poll for
+            // it with a deadline rather than assuming a fixed delay.
+            var cleanupDeadline = DateTime.UtcNow.AddSeconds(8);
+            while (ferry.Flows.Count > 0 && DateTime.UtcNow < cleanupDeadline)
+                await Task.Delay(100);
             Assert.Equal(0, ferry.Flows.Count);
         }
         finally
@@ -1000,14 +1016,20 @@ public class TcpFerryEndToEndTests
                 Assert.Equal(0, curl.ExitCode);
 
                 // After each connection completes, the flow must have been
-                // cleaned up — a loop would leave flows behind.
-                await Task.Delay(300);
+                // cleaned up — a loop would leave flows behind. The cleanup is
+                // asynchronous (client FIN → ACK → CleanupFlow); poll for it.
+                var cleanupDeadline = DateTime.UtcNow.AddSeconds(5);
+                while (ferry.Flows.Count > 1 && DateTime.UtcNow < cleanupDeadline)
+                    await Task.Delay(50);
                 Assert.True(ferry.Flows.Count <= 1,
                     $"flow table grew unbounded after {i + 1} connections (count={ferry.Flows.Count})");
             }
 
             // After all traffic, the flow table must be empty (all flows closed
             // and cleaned up). A capture/inject loop would keep flows alive.
+            var finalDeadline = DateTime.UtcNow.AddSeconds(5);
+            while (ferry.Flows.Count > 0 && DateTime.UtcNow < finalDeadline)
+                await Task.Delay(50);
             Assert.Equal(0, ferry.Flows.Count);
         }
         finally
