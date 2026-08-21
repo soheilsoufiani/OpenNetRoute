@@ -136,6 +136,36 @@ E4b loop-avoidance result was for TCP reinjection only).
 
 ## 4. What must be decided by an elevated experiment (not by reasoning)
 
+### E8-a result (2026-08-21, elevated run)
+
+`spikes/WinDivertSpike/Experiment8a.cs` (run via `.\run-spike.ps1 -Experiment --e8a`):
+
+| Question | Result |
+|---|---|
+| Capture outbound UDP 53 (`outbound and ip and udp and udp.DstPort == 53 and not loopback`) | **WORKS** — captured `192.168.100.10:<ephemeral> → 192.168.100.1:53`, DNS id echoed, `outbound=True` |
+| Per-process UDP attribution via `GetExtendedUdpTable` | **WORKS** — resolved a UDP 53 socket to the owning PID |
+| Reinject crafted reply inbound (E5b pattern: Outbound cleared, IfIdx/SubIfIdx preserved, Impostor=0, helper checksums) | **WORKS** — `WinDivertSend` succeeded, no re-capture loop observed |
+| **Client acceptance** — `Resolve-DnsName` returns the crafted A record (192.0.2.1) without the real network | **NOT PROVEN (INCONCLUSIVE)** — returned `''`; the client's resolver did not accept the reply |
+
+**Finding:** capture, attribution, injection, and loop-avoidance all work. The
+blocker is **crafted-reply acceptance** — the client resolver rejected the
+spoofed reply. Most plausible hypotheses (unproven, need the next experiment):
+
+1. The crafted reply's **question section** must be a byte-exact copy of the
+   query's (including EDNS0 OPT RR and label encoding). The current
+   reconstruction may not match.
+2. The client socket may have timed out during processing (the experiment held
+   the query for ~1s while crafting; DNS retries were observed system-wide).
+3. The reply's source IP/port or UDP checksum may not satisfy the resolver's
+   expectations.
+
+**Gate:** production DNS code is NOT started until the client-acceptance
+question is proven by a follow-up experiment (E8-b: forward the actual query
+bytes untouched and echo the reply with only the source swapped, eliminating
+the reconstruction variable; keep the client socket alive while crafting).
+
+
+
 Per the handoff guardrails (verify by running the test, not by reasoning):
 
 1. **Can WinDivert capture outbound UDP 53 cleanly** (filter
