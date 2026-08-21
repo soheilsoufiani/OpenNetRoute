@@ -8,7 +8,21 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ProxyApp.Core\ProxyApp.Core.csproj" />
+    <ProjectReference Include="..\ProxyApp.Network\ProxyApp.Network.csproj" />
     <ProjectReference Include="..\ProxyApp.Processes\ProxyApp.Processes.csproj" />
+  </ItemGroup>
+
+  <!-- Deploy the user-mode WinDivert.dll next to this assembly so it loads via
+       the normal native DLL search path (no runtime resolver needed). The source
+       is the WinDivert native library kept in the repository's reference tree
+       (WinDivert itself is dual-licensed LGPL-3.0-or-later / GPL-2.0). The DLL is
+       copied to this project's output and transitively to consumers (e.g. the
+       integration-test host). This must NOT be confused with the kernel driver
+       WinDivert64.sys, which is installed as a service separately. -->
+  <ItemGroup>
+    <None Include="..\..\references\TunnelX\AppTunnel\NativeLibs\x64\WinDivert.dll"
+          Link="WinDivert.dll"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

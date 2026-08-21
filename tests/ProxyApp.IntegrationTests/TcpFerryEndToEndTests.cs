@@ -1,0 +1,239 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using ProxyApp.Core.Configuration;
+using ProxyApp.Network;
+using ProxyApp.Network.Tests.TestInfrastructure;
+using ProxyApp.Processes;
+using ProxyApp.WinDivert;
+
+namespace ProxyApp.IntegrationTests;
+
+/// <summary>
+/// End-to-end ferry integration test (Step 3D). This exercises the full path:
+///
+///   curl
+///   -> WinDivert capture
+///   -> ProcessTable attribution (R1)
+///   -> RuleEngine = Proxy
+///   -> hold SYN (R4)
+///   -> SOCKS5 CONNECT to a local test proxy
+///   -> upstream (local HTTP backend)
+///   -> crafted SYN-ACK (R3/E5b)
+///   -> client ACK + request
+///   -> client payload -> upstream (3B)
+///   -> upstream response -> crafted packet -> client (3C)
+///   -> curl receives the response body
+///
+/// REQUIREMENTS: this test needs Administrator privileges and the WinDivert
+/// driver installed. When the test process is not elevated, it skips
+/// gracefully so the normal suite stays green. To run it for real, launch the
+/// test host elevated.
+/// </summary>
+public class TcpFerryEndToEndTests
+{
+    private static bool IsElevated()
+    {
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        return new System.Security.Principal.WindowsPrincipal(identity)
+            .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+    }
+
+    /// <summary>An HTTP backend that the local SOCKS5 proxy forwards to.</summary>
+    private static async Task<int> StartHttpBackendAsync()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var client = await listener.AcceptTcpClientAsync();
+                using var stream = client.GetStream();
+                var buf = new byte[4096];
+                // Consume the HTTP request (partial reads are fine for a test).
+                var total = 0;
+                while (total < buf.Length)
+                {
+                    var r = await stream.ReadAsync(buf.AsMemory(total, buf.Length - total));
+                    if (r <= 0) break;
+                    total += r;
+                    if (buf.AsSpan(0, total).IndexOf("\r\n\r\n"u8) >= 0) break;
+                }
+                var resp = Encoding.ASCII.GetBytes(
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+                await stream.WriteAsync(resp, 0, resp.Length);
+            }
+            catch { }
+        });
+        return port;
+    }
+
+    [Fact]
+    public async Task Curl_ThroughFerry_ReceivesResponseBytes()
+    {
+        if (!IsElevated())
+        {
+            // Cannot run the live WinDivert path without elevation.
+            return;
+        }
+
+        // The test process is the "selected application": it will launch curl,
+        // and the rule matches curl.exe so its SYN is proxied.
+        var backendPort = await StartHttpBackendAsync();
+
+        // Local SOCKS5 proxy that forwards to the backend.
+        using var proxy = new Socks5TestServer(async (request, stream, ct) =>
+        {
+            Console.WriteLine($"[Socks5Server] CONNECT dst={request.Host}:{request.Port} atyp={request.Atyp}");
+            using var upstream = new TcpClient();
+            await upstream.ConnectAsync(IPAddress.Loopback, backendPort, ct);
+            Console.WriteLine("[Socks5Server] backend connection established");
+            using var upstreamStream = upstream.GetStream();
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, new byte[] { 0, 0, 0, 0 }, 0, ct);
+            // Relay both directions concurrently so the backend's response flows
+            // back even while curl is still sending/retransmitting.
+            var toBackend = RelayOneWayAsync("client→backend", stream, upstreamStream, ct);
+            var toClient = RelayOneWayAsync("backend→client", upstreamStream, stream, ct);
+            await Task.WhenAll(toBackend, toClient);
+        });
+
+        // Ensure the WinDivert DLL can be located. The driver is installed by
+        // the TunnelX reference app under %LOCALAPPDATA%\TunnelX; the resolver
+        // honors PROXYAPP_WINDIVERT_DIR. If the DLL is not there, the test fails
+        // with a clear error rather than silently skipping the ferry.
+        var windivertDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TunnelX");
+        if (!File.Exists(Path.Combine(windivertDir, "WinDivert.dll")))
+        {
+            Assert.Fail($"WinDivert.dll not found at {windivertDir}; cannot run the end-to-end ferry test.");
+        }
+        Environment.SetEnvironmentVariable("PROXYAPP_WINDIVERT_DIR", windivertDir);
+
+        var rules = new List<ApplicationRule>
+        {
+            new() { ExecutableName = "curl.exe", Enabled = true, Mode = ProxyMode.Proxy }
+        };
+
+        // Ensure the WinDivert native DLL resolver is registered BEFORE any
+        // WinDivert P/Invoke (the observer handle below and the ferry). Without
+        // this, WinDivert.dll is looked up via the standard search path and fails
+        // with DllNotFoundException because it is not beside the test host.
+        WinDivertLibrary.EnsureRegistered();
+
+        // Independent outbound observer: a SNIFF+RECV_ONLY handle at priority 1
+        // that sees ALL outbound TCP packets to 8.8.8.8:80 — including curl's ACK
+        // of the injected response and any retransmits. This tells us whether the
+        // response reached curl (curl would send an ACK).
+        CancellationTokenSource? ferryObsCts = null;
+        var observerHandle = WinDivertNative.WinDivertOpen(
+            "outbound and ip and ip.DstAddr == 8.8.8.8 and tcp and tcp.DstPort == 80",
+            WinDivertLayer.Network, 1, WinDivertNative.Flags.SniffAndReceiveOnly);
+        if (observerHandle != IntPtr.Zero && observerHandle != new IntPtr(-1))
+        {
+            var observerCts = new CancellationTokenSource();
+            _ = Task.Run(() =>
+            {
+                var buffer = new byte[65535];
+                var addr = new WinDivertAddress();
+                while (!observerCts.IsCancellationRequested)
+                {
+                    uint readLen = 0;
+                    if (!WinDivertNative.WinDivertRecv(observerHandle, buffer, (uint)buffer.Length, ref readLen, ref addr))
+                        break;
+                    if (readLen < 20) continue;
+                    if (TcpPacketParser.TryParse(buffer, readLen, out var t))
+                        Console.WriteLine($"[OBS] {t.SrcIp}:{t.SrcPort}->{t.DstIp}:{t.DstPort} " +
+                                          $"flags=0x{t.TcpFlags:X2} seq={t.Seq} ack={t.Ack} len={readLen}");
+                }
+            });
+            ferryObsCts = observerCts;
+        }
+        else
+        {
+            Console.WriteLine("[OBS] Could not open observer handle (skipping independent observation)");
+        }
+
+        var ferry = new TcpFerry(
+            new Socks5Client(new ProxyConfiguration
+            {
+                Host = "127.0.0.1", Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+            }),
+            new ProcessTable(),
+            rules,
+            captureFilter: "outbound and ip and tcp and not loopback",
+            holdTimeoutMs: 100, // short hold for the test
+            trace: m => Console.WriteLine(m)); // surface ferry diagnostics on failure
+
+        try
+        {
+            ferry.Start();
+
+            // Launch curl to a public destination. The ferry intercepts its SYN,
+            // routes it through the SOCKS5 proxy to the backend, and relays the
+            // response back.
+            var psi = new ProcessStartInfo
+            {
+                FileName = "curl.exe",
+                Arguments = "-s -o NUL --max-time 10 http://8.8.8.8/",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false
+            };
+            using var curl = Process.Start(psi)!;
+            // Task.WhenAny returns one of its ARGUMENT tasks; it can never return
+            // the Task.CompletedTask singleton, so the completion check must
+            // compare against the WaitForExitAsync task itself (reference
+            // equality), not against Task.CompletedTask. The previous
+            // `exited != Task.CompletedTask` was always true and failed the test
+            // even when curl exited successfully within milliseconds.
+            var curlExitTask = curl.WaitForExitAsync();
+            var timeoutTask = Task.Delay(TimeSpan.FromSeconds(12));
+            var completed = await Task.WhenAny(curlExitTask, timeoutTask);
+            if (completed != curlExitTask)
+            {
+                curl.Kill();
+                await curlExitTask;
+                Assert.Fail("curl did not finish within 12s (ferry relay failed).");
+            }
+
+            // curl should have exited 0 if it received the "OK" body through the ferry.
+            Assert.Equal(0, curl.ExitCode);
+        }
+        finally
+        {
+            await ferry.StopAsync();
+            ferry.Dispose();
+
+            // Stop and close the independent observer.
+            if (observerHandle != IntPtr.Zero && observerHandle != new IntPtr(-1))
+            {
+                ferryObsCts?.Cancel();
+                WinDivertNative.WinDivertClose(observerHandle);
+                try { ferryObsCts?.Dispose(); } catch { }
+            }
+        }
+    }
+
+    private static async Task RelayOneWayAsync(string dir, NetworkStream a, NetworkStream b, CancellationToken ct)
+    {
+        var buffer = new byte[4096];
+        while (!ct.IsCancellationRequested)
+        {
+            int n;
+            try { n = await a.ReadAsync(buffer, ct); }
+            catch (Exception ex) { Console.WriteLine($"[Socks5Server] {dir} read error: {ex.Message}"); break; }
+            if (n <= 0) { Console.WriteLine($"[Socks5Server] {dir} EOF"); break; }
+            Console.WriteLine($"[Socks5Server] {dir} relayed {n} bytes: {Hex(buffer, n)}");
+            await b.WriteAsync(buffer.AsMemory(0, n), ct);
+        }
+    }
+
+    private static string Hex(byte[] data, int len) =>
+        Convert.ToHexString(data, 0, Math.Min(len, 32));
+}
