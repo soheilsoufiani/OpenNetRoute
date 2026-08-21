@@ -117,6 +117,45 @@ public class RuleEngineTests
     }
 
     [Fact]
+    public void RuleMatchesByName_EvenWhenPathKnown()
+    {
+        // A rule with only an ExecutableName matches when the process's
+        // ExecutableName equals it, regardless of the (non-null) process path —
+        // the rule needs no path to match.
+        var rules = new List<ApplicationRule> { Rule("curl.exe", ProxyMode.Proxy) };
+        Assert.Equal(ProxyMode.Proxy,
+            RuleEngine.Evaluate(rules, "curl.exe", @"C:\Tools\curl.exe"));
+    }
+
+    [Fact]
+    public void RuleMatchesByPath_WhenNameDiffers()
+    {
+        // A rule may match by its ExecutablePath even when the process name does
+        // not match the rule's ExecutableName (e.g. a renamed copy of the exe).
+        var rules = new List<ApplicationRule>
+        {
+            Rule("chrome.exe", ProxyMode.Proxy, path: @"C:\Program Files\Chrome\chrome.exe")
+        };
+        Assert.Equal(ProxyMode.Proxy,
+            RuleEngine.Evaluate(rules, "myapp.exe", @"C:\Program Files\Chrome\chrome.exe"));
+    }
+
+    [Fact]
+    public void FirstRuleWins_EvenIfLaterRuleMatchesByPath()
+    {
+        // Order is authoritative: the first enabled matching rule wins, whether
+        // it matched by name or by path.
+        var rules = new List<ApplicationRule>
+        {
+            Rule("curl.exe", ProxyMode.Direct),
+            Rule("chrome.exe", ProxyMode.Proxy, path: @"C:\Tools\curl.exe")
+        };
+        // curl.exe matches the first rule by name (Direct); the later path rule
+        // is never reached.
+        Assert.Equal(ProxyMode.Direct, RuleEngine.Evaluate(rules, "curl.exe", @"C:\Tools\curl.exe"));
+    }
+
+    [Fact]
     public void NullProcessName_WithNameRule_ReturnsDirect()
     {
         var rules = new List<ApplicationRule> { Rule("curl.exe") };

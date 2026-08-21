@@ -603,6 +603,36 @@ Document the rule evaluation order.
 
 ---
 
+## Rule Evaluation Order (authoritative)
+
+`RuleEngine.Evaluate` (in `ProxyApp.Core.Rules`) is the single evaluation point.
+
+1. Rules are evaluated **in list order** (the order they appear in
+   `ApplicationSettings.Rules`). The list is ordered; there is no sorting or
+   priority field.
+2. **The first enabled rule that matches wins** — later rules for the same
+   process are never evaluated. This applies whether the match was by name or
+   by path.
+3. A rule matches when:
+   - the process `ExecutableName` equals the rule's `ExecutableName`
+     (case-insensitive, ordinal), OR
+   - the process `ExecutablePath` equals the rule's `ExecutablePath`
+     (case-insensitive, ordinal; both must be non-null/non-empty).
+   A rule with only `ExecutableName` matches by name regardless of the process
+   path. A rule with only `ExecutablePath` matches by path only.
+4. A **disabled rule** (`Enabled = false`) is skipped entirely; it neither
+   matches nor blocks a later enabled rule.
+5. When **no enabled rule matches**, the default is **Direct** — the SYN is
+   passed through unchanged and the traffic never touches the ferry.
+6. The process identity used for matching is the one resolved at SYN-capture
+   time (see `IConnectionProcessResolver` / `ProcessTable`, validated in E7).
+
+Pinned by `tests/ProxyApp.Core.Tests/RuleEngineTests.cs` (first-enabled-match
+wins, name/path matching, disabled-rule ignoring, no-match → Direct,
+name-vs-path precedence).
+
+---
+
 # Phase 8 — DNS
 
 DNS behavior must be explicitly designed.
