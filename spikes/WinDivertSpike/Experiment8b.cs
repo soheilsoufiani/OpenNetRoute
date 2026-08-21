@@ -145,15 +145,22 @@ internal static class Experiment8b
             return 1;
         }
 
-        // ── 6. Forward the QUERY BYTES AS-IS to the local test resolver; take
-        //       the REAL reply. The test server echoes the question and answers
-        //       A=192.0.2.1 — the real network is never involved. ──
+        // ── 6. Forward the DNS PAYLOAD bytes AS-IS (stripped of the IPv4+UDP
+        //       headers) to the local test resolver; take the REAL reply. The
+        //       test server echoes the question and answers A=192.0.2.1 — the
+        //       real network is never involved.
+        //       (Bug fixed: the first run forwarded the WHOLE captured packet
+        //       including IP+UDP headers, so the server saw qdcount=0 in the
+        //       IP header and could not build a reply.) ──
+        var ihl = (query![0] & 0x0F) * 4;           // IPv4 header length
+        var dnsPayload = query.AsSpan(ihl + 8, (int)queryLen - ihl - 8).ToArray(); // strip IP+UDP headers
+
         byte[]? reply = null;
         var forwarded = false;
         try
         {
             using var forwarder = new UdpClient();
-            var forwardResult = await forwarder.SendAsync(query!, (int)queryLen, "127.0.0.1", testResolver.Port);
+            var forwardResult = await forwarder.SendAsync(dnsPayload, dnsPayload.Length, "127.0.0.1", testResolver.Port);
             forwarded = forwardResult > 0;
 
             var recvTask = forwarder.ReceiveAsync();
@@ -162,9 +169,9 @@ internal static class Experiment8b
             {
                 var result = await recvTask;
                 reply = result.Buffer;
-                Console.WriteLine($"  [forwarded query] -> 127.0.0.1:{testResolver.Port} ({queryLen} bytes, sent={forwarded})");
+                Console.WriteLine($"  [forwarded query] -> 127.0.0.1:{testResolver.Port} ({dnsPayload.Length} DNS bytes, sent={forwarded})");
                 Console.WriteLine($"  [test reply] {result.RemoteEndPoint} ({reply.Length} bytes)");
-                DumpDnsHeader(reply, (uint)reply.Length, "reply");
+                DumpDnsPayload(reply, "reply");
                 Console.WriteLine($"  [reply bytes] {BitConverter.ToString(reply, 0, Math.Min(reply.Length, 48)).Replace("-", " ")}...");
             }
             else
@@ -386,6 +393,15 @@ internal static class Experiment8b
         if (len < udp + 12) { Console.WriteLine($"  [{label} dns] too short for DNS header"); return; }
         var id = (ushort)((packet[udp] << 8) | packet[udp + 1]);
         var flags = (ushort)((packet[udp + 2] << 8) | packet[udp + 3]);
+        Console.WriteLine($"  [{label} dns] id=0x{id:X4} flags=0x{flags:X4}");
+    }
+
+    /// <summary>Dumps the DNS header of a raw DNS payload (no IP/UDP headers).</summary>
+    private static void DumpDnsPayload(byte[] payload, string label)
+    {
+        if (payload.Length < 12) { Console.WriteLine($"  [{label} dns] too short for DNS header"); return; }
+        var id = (ushort)((payload[0] << 8) | payload[1]);
+        var flags = (ushort)((payload[2] << 8) | payload[3]);
         Console.WriteLine($"  [{label} dns] id=0x{id:X4} flags=0x{flags:X4}");
     }
 
