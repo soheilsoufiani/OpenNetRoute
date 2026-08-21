@@ -121,10 +121,11 @@ public class TcpPacketBuilderTests
     [Fact]
     public void BuildDataPacket_WithFinFlag_SetsFinPshAck()
     {
-        // Regression: the final data packet must carry the server's close
-        // (FIN|PSH|ACK = 0x19) so the client completes the connection close
-        // without needing a separate close-packet injection (which WinDivert
-        // rejects with error 6 after the client has sent its own FIN).
+        // The builder supports setFin=true (FIN|PSH|ACK = 0x19) as a capability
+        // for callers that must deliver the close with the data. The ferry does
+        // NOT use it: response data is injected as PSH|ACK (0x18) and the
+        // server's close is delivered as a SEPARATE FIN|ACK only after the
+        // client has ACKed the data (see TcpFerry.InjectFinAfterAckAsync).
         var packet = TcpPacketBuilder.BuildDataPacket(
             ServerIp, ClientIp, ServerPort, ClientPort, ServerIsn + 1, ClientIsn + 1,
             "OK"u8.ToArray(), setFin: true);
