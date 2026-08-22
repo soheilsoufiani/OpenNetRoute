@@ -22,8 +22,17 @@ internal sealed class TcpFerry : IDisposable
     /// <summary>Default server ISN (S1) to present to the client in crafted SYN-ACKs.</summary>
     internal const uint DefaultServerIsn = 0x12345678;
 
-    /// <summary>Default SYN hold time before injecting the crafted SYN-ACK (milliseconds).</summary>
-    internal const int DefaultHoldMs = 600;
+    /// <summary>
+    /// Default SYN hold time before injecting the crafted SYN-ACK (milliseconds).
+    /// 600ms was the original default but it adds that delay to EVERY new
+    /// connection before the SYN-ACK is injected — a browser opening many
+    /// concurrent connections pays it per connection, dominating perceived
+    /// latency. 100ms is the value validated by the elevated E2E tests (which
+    /// already used holdTimeoutMs: 100) and is browser-friendly: long enough
+    /// for the SOCKS5 CONNECT to complete concurrently, short enough that a
+    /// browser's per-connection setup cost is small.
+    /// </summary>
+    internal const int DefaultHoldMs = 100;
 
     /// <summary>Default idle timeout for proxied flows.</summary>
     internal static readonly TimeSpan DefaultIdleTimeout = TimeSpan.FromMinutes(2);
@@ -155,7 +164,19 @@ internal sealed class TcpFerry : IDisposable
 
     /// <summary>
     /// The main capture loop. Reads packets from the WinDivert handle, classifies
-    /// them, and dispatches to the appropriate handler.
+    /// them, and dispatches to the appropriate handler WITHOUT blocking on
+    /// per-flow I/O:
+    ///
+    ///   - Packets for an existing flow are ENQUEUED to the flow's processing
+    ///     channel and the loop returns immediately — the flow's consumer task
+    ///     handles them serially (same-flow ordering preserved), while other
+    ///     flows proceed independently. This is essential: a browser opens many
+    ///     concurrent connections, and awaiting each flow's upstream write
+    ///     inline would serialize all flows through the loop and stall it while
+    ///     any flow's network I/O is in flight.
+    ///   - New SYNs are dispatched to a background task (the SOCKS5 CONNECT can
+    ///     take seconds); duplicate SYNs see the flow already in the table and
+    ///     pass through.
     /// </summary>
     private async Task CaptureLoopAsync(CancellationToken ct)
     {
@@ -185,7 +206,12 @@ internal sealed class TcpFerry : IDisposable
 
                 if (existingFlow != null)
                 {
-                    await HandleExistingFlowAsync(existingFlow, buffer, readLen, tuple, ct);
+                    // Existing flow: enqueue the work (the buffer is copied by
+                    // the closure — the loop reuses the same array). The flow's
+                    // consumer serializes same-flow packets.
+                    var workBuffer = buffer.ToArray();
+                    existingFlow.EnqueueProcessing(() =>
+                        HandleExistingFlowAsync(existingFlow, workBuffer, readLen, tuple, ct));
                     continue;
                 }
 
@@ -198,8 +224,20 @@ internal sealed class TcpFerry : IDisposable
                     continue;
                 }
 
-                // ── New SYN: attribute, hold, and inject crafted SYN-ACK ──
-                await HandleNewSynAsync(buffer, readLen, tuple, addr, ct);
+                // ── New SYN: attribute, hold, and inject crafted SYN-ACK.
+                //    Dispatched to a background task so the loop is not blocked
+                //    by the SOCKS5 CONNECT (which can take seconds). The flow is
+                //    added to the table before the CONNECT, so a retransmitted
+                //    SYN sees it and passes through. The continuation observes
+                //    exceptions so a handler failure cannot surface as an
+                //    unobserved task exception. ──
+                var synBuffer = buffer.ToArray();
+                _ = Task.Run(() => HandleNewSynAsync(synBuffer, readLen, tuple, addr, ct), ct)
+                    .ContinueWith(t =>
+                    {
+                        if (t.IsFaulted && _isRunning)
+                            Debug.WriteLine($"[TcpFerry] SYN handler error: {t.Exception?.GetBaseException().Message}");
+                    }, TaskScheduler.Default);
             }
         }
         catch (OperationCanceledException) { }
@@ -239,15 +277,11 @@ internal sealed class TcpFerry : IDisposable
             return;
         }
 
-        if (_flowTable.Contains(flowKey))
-        {
-            // Duplicate SYN; pass through.
-            WinDivertNative.WinDivertSend(
-                _captureHandle, buffer, readLen, IntPtr.Zero, ref addr);
-            return;
-        }
-
-        // Create flow state.
+        // Create flow state and add it to the table ATOMICALLY. With the SYN
+        // handler dispatched to a background task, two retransmitted SYNs could
+        // both pass the Contains check below before either adds the flow — so
+        // the TryAdd return value is authoritative: only the winner proceeds to
+        // establish an upstream; the loser passes the duplicate SYN through.
         var flow = new FlowState(
             flowKey, tuple.Seq, DefaultServerIsn, addr)
         {
@@ -256,7 +290,14 @@ internal sealed class TcpFerry : IDisposable
             Status = FlowStatus.Connecting
         };
 
-        _flowTable.TryAdd(flowKey, flow);
+        if (!_flowTable.TryAdd(flowKey, flow))
+        {
+            // A concurrent handler already created this flow (duplicate SYN).
+            Trace("SYN -> duplicate (flow already being created); pass-through");
+            WinDivertNative.WinDivertSend(
+                _captureHandle, buffer, readLen, IntPtr.Zero, ref addr);
+            return;
+        }
 
         // ── R4: hold the SYN while the upstream is established ──
         // The upstream SOCKS5 connection is established concurrently with the hold
@@ -332,6 +373,31 @@ internal sealed class TcpFerry : IDisposable
                 CleanupFlow(flow.Key, flow);
             }
         }, TaskScheduler.Default);
+
+        // Start the per-flow packet-processing consumer. It drains the flow's
+        // processing channel serially, so different flows never block each
+        // other even though the capture loop enqueues from a single thread.
+        StartFlowProcessing(flow, pumpCts.Token);
+    }
+
+    /// <summary>
+    /// Per-flow packet-processing consumer: drains the flow's processing channel
+    /// serially, preserving same-flow packet ordering while different flows
+    /// proceed independently (the capture loop enqueues and returns immediately).
+    /// </summary>
+    private static void StartFlowProcessing(FlowState flow, CancellationToken ct)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var work in flow.ProcessingReader.ReadAllAsync(ct))
+                {
+                    await work();
+                }
+            }
+            catch (OperationCanceledException) { }
+        }, ct);
     }
 
     /// <summary>
@@ -558,6 +624,7 @@ internal sealed class TcpFerry : IDisposable
             try { flow.UpstreamStream?.Dispose(); } catch { }
             try { flow.LoopCts?.Cancel(); } catch { }
             try { flow.LoopCts?.Dispose(); } catch { }
+            flow.CompleteProcessing(); // lets the per-flow consumer exit
             flow.Status = FlowStatus.Closed;
         }
     }

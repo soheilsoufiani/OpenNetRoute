@@ -74,6 +74,16 @@ path has never been confirmed against real traffic; this is the manual check.
 | Non-selected app traffic | No CONNECT on the proxy (direct) |
 | STOP | Status: Stopped; restart works |
 
+## Expected latency
+
+The ferry's SYN hold timeout (the delay between capturing a connection's SYN
+and injecting the crafted SYN-ACK) is **100ms** — the value validated by the
+elevated E2E tests. A browser opening many concurrent connections should see
+a **quick first byte** (approximately one round-trip to the proxy plus the
+hold, not the original 600ms-per-connection default). If a page feels
+noticeably slower than a direct proxy configuration, that is a
+performance/correctness regression to report, not expected behavior.
+
 ## Known limitations
 
 - Settings are not persisted across launches (no JSON save/load yet).

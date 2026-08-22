@@ -1,4 +1,5 @@
 using System.Net;
+using System.Threading.Channels;
 
 namespace ProxyApp.WinDivert;
 
@@ -50,24 +51,48 @@ internal sealed class FlowState
     /// <summary>
     /// Number of payload bytes from the client that have been written to the
     /// upstream socket. Used to compute the ack value in injected server→client
-    /// packets.
+    /// packets. Written by the per-flow consumer; read by the upstream pump.
+    /// Volatile so the pump never reads a stale cached value.
     /// </summary>
-    public long ClientBytesSent { get; set; }
+    private long _clientBytesSent;
+
+    /// <inheritdoc cref="_clientBytesSent"/>
+    public long ClientBytesSent
+    {
+        get => Interlocked.Read(ref _clientBytesSent);
+        set => Interlocked.Exchange(ref _clientBytesSent, value);
+    }
 
     /// <summary>
     /// Number of payload bytes from the upstream that have been injected to the
     /// client. Used to compute the seq value in injected server→client packets
-    /// (seq = ServerIsn + 1 + ClientBytesRecv).
+    /// (seq = ServerIsn + 1 + ClientBytesRecv). Written by the upstream pump;
+    /// read by the per-flow consumer.
     /// </summary>
-    public long ClientBytesRecv { get; set; }
+    private long _clientBytesRecv;
+
+    /// <inheritdoc cref="_clientBytesRecv"/>
+    public long ClientBytesRecv
+    {
+        get => Interlocked.Read(ref _clientBytesRecv);
+        set => Interlocked.Exchange(ref _clientBytesRecv, value);
+    }
 
     /// <summary>
     /// The highest ACK sequence the client has sent (from captured client ACK
     /// packets). The ferry compares this against the server seq it has injected
     /// to decide when the client has accepted all response bytes, so the
     /// separate server FIN is only injected after the client ACKed the data.
+    /// Written by the per-flow consumer; read by the upstream pump.
     /// </summary>
-    public uint ClientAckedUpTo { get; set; }
+    private uint _clientAckedUpTo;
+
+    /// <inheritdoc cref="_clientAckedUpTo"/>
+    public uint ClientAckedUpTo
+    {
+        get => Volatile.Read(ref _clientAckedUpTo);
+        set => Volatile.Write(ref _clientAckedUpTo, value);
+    }
 
     // ── Lifecycle ──
 
@@ -79,6 +104,27 @@ internal sealed class FlowState
 
     /// <summary>CancellationTokenSource for the upstream leg; cancelled on cleanup.</summary>
     public CancellationTokenSource? LoopCts { get; set; }
+
+    // ── Per-flow packet-processing serialization ──
+    //
+    // The capture loop must not block on per-flow I/O: a browser opens many
+    // concurrent connections, and awaiting each flow's upstream write inline
+    // would serialize all flows through the loop (and stall it entirely while
+    // any flow's network I/O is in flight). Instead, the loop enqueues work
+    // here and returns immediately; a single per-flow consumer task drains
+    // this channel serially, preserving same-flow packet ordering while
+    // different flows proceed independently.
+
+    private readonly Channel<Func<Task>> _processing = Channel.CreateUnbounded<Func<Task>>();
+
+    /// <summary>Enqueues a packet-processing step for this flow (non-blocking).</summary>
+    public void EnqueueProcessing(Func<Task> work) => _processing.Writer.TryWrite(work);
+
+    /// <summary>The reader the per-flow consumer drains.</summary>
+    public ChannelReader<Func<Task>> ProcessingReader => _processing.Reader;
+
+    /// <summary>Completes the channel so the per-flow consumer exits.</summary>
+    public void CompleteProcessing() => _processing.Writer.TryComplete();
 
     /// <param name="key">The connection's 4-tuple.</param>
     /// <param name="clientIsn">The client ISN from the captured SYN.</param>
