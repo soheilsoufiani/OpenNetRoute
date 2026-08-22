@@ -164,6 +164,36 @@ question is proven by a follow-up experiment (E8-b: forward the actual query
 bytes untouched and echo the reply with only the source swapped, eliminating
 the reconstruction variable; keep the client socket alive while crafting).
 
+### E8-b result (2026-08-21, elevated run) — **PASS**
+
+`spikes/WinDivertSpike/Experiment8b.cs` (run directly, `--e8b`):
+
+```
+[captured query]  192.168.100.10:58073 -> 192.168.100.1:53 len=57 (id=0xDFA2)
+[test-server]     received 29 bytes (DNS payload stripped of IP+UDP headers)
+[test-server]     sent 45 bytes (id echoed, QR=1, RA=1)
+[injected reply]  192.168.100.1:53 -> 192.168.100.10:58073 len=73 (DNS 45 bytes)
+[E] UDP 53 packets observed: 1   ← no loop
+[client acceptance] Resolve-DnsName returned: '192.0.2.1'
+[classification] PASS
+```
+
+The client resolver accepted the reinjected reply (192.0.2.1 can only come
+from the injected reply — a real resolver never answers with TEST-NET). The
+**DNS-leak-closing approach is feasible for non-DoH apps.** Bugs found and
+fixed along the way: the first E8-b run forwarded the WHOLE captured packet
+(IP+UDP headers included), so the test server saw qdcount=0 and could not
+build a reply; the fix strips IP+UDP headers before forwarding (commit
+`6128b47`).
+
+**Remaining unvalidated component:** the SOCKS5 UDP ASSOCIATE leg (client →
+real proxy over UDP, RFC 1928 §7). E8-b used a local plain-UDP test server,
+not the SOCKS5 relay. This is the only piece between the experiment and
+production; it is implemented and tested independently (Step 1), then
+validated by the E8-c elevated experiment (full chain: real query → capture →
+UDP ASSOCIATE to a UDP-ASSOCIATE-capable test SOCKS5 server → reinject →
+client acceptance).
+
 
 
 Per the handoff guardrails (verify by running the test, not by reasoning):
@@ -176,7 +206,11 @@ Per the handoff guardrails (verify by running the test, not by reasoning):
    (race: query sent → row visible → we capture the datagram), fast enough for
    the rule decision?
 3. **Can a SOCKS5 UDP ASSOCIATE leg** relay the query to the proxy's resolver
-   and return the reply with correct source spoofing?
+   and return the reply with correct source spoofing? — **OPEN** (the only
+   unvalidated component; E8-b proved the forward-and-echo via plain UDP, not
+   via SOCKS5 UDP ASSOCIATE). Implemented and tested independently (Step 1:
+   `Socks5UdpAssociateClient` + extended `Socks5TestServer`), then validated
+   by E8-c.
 
 These are experiment-shaped questions. The doc records them as open; nothing is
 assumed.
