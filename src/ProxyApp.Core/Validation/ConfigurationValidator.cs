@@ -89,13 +89,22 @@ public static class ConfigurationValidator
 
         var errors = new List<string>();
 
-        var nameErrors = ValidateExecutableName(rule.ExecutableName);
-        if (nameErrors is not null)
-            errors.Add(nameErrors);
+        // A folder/bundle rule may have no executable name (it matches by
+        // FolderPath prefix); a name/path rule must have one.
+        if (string.IsNullOrWhiteSpace(rule.FolderPath))
+        {
+            var nameErrors = ValidateExecutableName(rule.ExecutableName);
+            if (nameErrors is not null)
+                errors.Add(nameErrors);
+        }
 
         var pathErrors = ValidateExecutablePath(rule.ExecutablePath);
         if (pathErrors is not null)
             errors.Add(pathErrors);
+
+        var folderErrors = ValidateFolderPath(rule.FolderPath);
+        if (folderErrors is not null)
+            errors.Add(folderErrors);
 
         if (!Enum.IsDefined(rule.Mode))
             errors.Add($"Rule mode '{rule.Mode}' is not supported.");
@@ -165,25 +174,28 @@ public static class ConfigurationValidator
             // otherwise the duplicate check on a blank name would add noise.
             if (ruleErrors.IsValid)
             {
-                // A valid rule is guaranteed to have a non-blank executable name.
-                var name = rule.ExecutableName!;
+                // A valid rule is guaranteed to have a non-blank identity: its
+                // executable name (name/path rule) or its folder path (bundle
+                // rule). Two folder rules on the SAME folder conflict; a name
+                // rule and a folder rule never conflict (different identities).
+                var identity = rule.FolderPath ?? rule.ExecutableName!;
 
-                if (!seen.Add(name))
+                if (!seen.Add(identity))
                 {
-                    errors.Add($"Duplicate rule for '{name}' at index {i}.");
+                    errors.Add($"Duplicate rule for '{identity}' at index {i}.");
                 }
                 else
                 {
-                    if (modes.TryGetValue(name, out var existingMode) &&
+                    if (modes.TryGetValue(identity, out var existingMode) &&
                         existingMode != rule.Mode)
                     {
                         errors.Add(
-                            $"Conflicting rules for '{name}': index {modes[name]} is " +
+                            $"Conflicting rules for '{identity}': index {modes[identity]} is " +
                             $"'{existingMode}' and index {i} is '{rule.Mode}'.");
                     }
                     else
                     {
-                        modes[name] = rule.Mode;
+                        modes[identity] = rule.Mode;
                     }
                 }
             }
@@ -266,6 +278,23 @@ public static class ConfigurationValidator
 
         if (executablePath.IndexOf('\0') >= 0)
             return "Executable path must not contain a null character.";
+
+        return null;
+    }
+
+    private static string? ValidateFolderPath(string? folderPath)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath))
+            return null;
+
+        if (folderPath.Length > MaxExecutablePathLength)
+            return $"Folder path must not exceed {MaxExecutablePathLength} characters.";
+
+        if (folderPath.IndexOf('\0') >= 0)
+            return "Folder path must not contain a null character.";
+
+        if (!Path.IsPathRooted(folderPath))
+            return $"Folder path '{folderPath}' is not a rooted path.";
 
         return null;
     }

@@ -1,7 +1,10 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Data;
+using System.Windows.Controls;
 using ProxyApp.Core.Configuration;
 using ProxyApp.Core.Processes;
 using ProxyApp.Core.Services;
@@ -33,6 +36,67 @@ public sealed class ProcessRow : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
+/// <summary>A manually added .exe rule (static, survives Refresh).</summary>
+public sealed class ManualRuleRow : INotifyPropertyChanged
+{
+    public string ExecutableName { get; init; } = "";
+    public string ExecutablePath { get; init; } = "";
+
+    private bool _enabled = true;
+
+    public bool Enabled
+    {
+        get => _enabled;
+        set
+        {
+            if (_enabled == value) return;
+            _enabled = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Enabled)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+}
+
+/// <summary>A folder bundle rule (static, survives Refresh).</summary>
+public sealed class BundleRow : INotifyPropertyChanged
+{
+    public string FolderPath { get; init; } = "";
+    public string DisplayName { get; init; } = "";
+
+    /// <summary>Executables found under the folder at add time (display only).</summary>
+    public ObservableCollection<string> Exes { get; } = new();
+
+    private bool _enabled = true;
+
+    public bool Enabled
+    {
+        get => _enabled;
+        set
+        {
+            if (_enabled == value) return;
+            _enabled = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Enabled)));
+        }
+    }
+
+    /// <summary>Index into the Proxy/Direct ComboBox (0 = Proxy, 1 = Direct).</summary>
+    private int _modeIndex;
+
+    public int ModeIndex
+    {
+        get => _modeIndex;
+        set
+        {
+            if (_modeIndex == value) return;
+            _modeIndex = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ModeIndex)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+}
+
 /// <summary>
 /// Main window. Communicates with the engine ONLY through
 /// <see cref="IProxyEngine"/> and with processes only through
@@ -44,6 +108,8 @@ public partial class MainWindow : Window
     private readonly IProxyEngine _engine;
     private readonly IProcessEnumerator _processEnumerator;
     private readonly ObservableCollection<ProcessRow> _processes = new();
+    private readonly ObservableCollection<ManualRuleRow> _manualRules = new();
+    private readonly ObservableCollection<BundleRow> _bundles = new();
 
     public MainWindow(IProxyEngine engine, IProcessEnumerator processEnumerator)
     {
@@ -51,7 +117,10 @@ public partial class MainWindow : Window
         _processEnumerator = processEnumerator ?? throw new ArgumentNullException(nameof(processEnumerator));
 
         InitializeComponent();
+
         ProcessList.ItemsSource = _processes;
+        ManualRuleList.ItemsSource = _manualRules;
+        BundleList.ItemsSource = _bundles;
         RefreshProcesses();
     }
 
@@ -79,12 +148,150 @@ public partial class MainWindow : Window
             if (selections.Contains(row.ProcessId))
                 row.RouteViaProxy = true;
         }
+
+        // Manual rules and bundles are static — they survive Refresh untouched.
+        ApplySearchFilter();
+    }
+
+    // ── Feature 1: search box ──
+
+    private void OnSearchTextChanged(object sender, TextChangedEventArgs e)
+    {
+        ApplySearchFilter();
     }
 
     private void OnRefreshClicked(object sender, RoutedEventArgs e)
     {
         RefreshProcesses();
     }
+
+    /// <summary>
+    /// Filters the process list (name + path), manual rules (exe name + path),
+    /// and bundle groups (folder name + path) by the search text.
+    /// </summary>
+    private void ApplySearchFilter()
+    {
+        var text = SearchBox.Text.Trim();
+
+        var view = CollectionViewSource.GetDefaultView(_processes);
+        view.Filter = p =>
+        {
+            if (text.Length == 0) return true;
+            var row = (ProcessRow)p;
+            return row.ProcessName.Contains(text, StringComparison.OrdinalIgnoreCase) ||
+                   (row.ProcessPath?.Contains(text, StringComparison.OrdinalIgnoreCase) ?? false);
+        };
+
+        var manualView = CollectionViewSource.GetDefaultView(_manualRules);
+        manualView.Filter = m =>
+        {
+            if (text.Length == 0) return true;
+            var row = (ManualRuleRow)m;
+            return row.ExecutableName.Contains(text, StringComparison.OrdinalIgnoreCase) ||
+                   row.ExecutablePath.Contains(text, StringComparison.OrdinalIgnoreCase);
+        };
+
+        var bundleView = CollectionViewSource.GetDefaultView(_bundles);
+        bundleView.Filter = b =>
+        {
+            if (text.Length == 0) return true;
+            var row = (BundleRow)b;
+            return row.DisplayName.Contains(text, StringComparison.OrdinalIgnoreCase) ||
+                   row.FolderPath.Contains(text, StringComparison.OrdinalIgnoreCase);
+        };
+    }
+
+    // ── Feature 2: add a manual .exe rule ──
+
+    private void OnAddExeClicked(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Select an executable to route through the proxy",
+            Filter = "Executable files (*.exe)|*.exe",
+            CheckFileExists = true
+        };
+
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        var path = dialog.FileName;
+        // Prevent duplicates (case-insensitive, ordinal path comparison).
+        if (_manualRules.Any(r => string.Equals(r.ExecutablePath, path, StringComparison.OrdinalIgnoreCase)))
+        {
+            SetStatus($"'{path}' is already a manual rule.", isError: true);
+            return;
+        }
+
+        _manualRules.Add(new ManualRuleRow
+        {
+            ExecutableName = Path.GetFileName(path),
+            ExecutablePath = path
+        });
+        ApplySearchFilter();
+    }
+
+    private void OnRemoveManualRuleClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: ManualRuleRow row })
+            _manualRules.Remove(row);
+    }
+
+    // ── Feature 3: add a folder bundle ──
+
+    private void OnAddFolderClicked(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Select a folder of applications to route",
+            Multiselect = false
+        };
+
+        if (dialog.ShowDialog(this) != true)
+            return;
+
+        var path = dialog.FolderName;
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        if (_bundles.Any(b => string.Equals(b.FolderPath, path, StringComparison.OrdinalIgnoreCase)))
+        {
+            SetStatus($"'{path}' is already a bundle rule.", isError: true);
+            return;
+        }
+
+        var bundle = new BundleRow
+        {
+            FolderPath = path,
+            DisplayName = Path.GetFileName(path.TrimEnd('\\', '/'))
+        };
+
+        // Scan recursively at add time (display only — matching is by prefix at
+        // SYN time, so newly added exes in the folder are covered).
+        try
+        {
+            foreach (var exe in Directory.EnumerateFiles(path, "*.exe", SearchOption.AllDirectories)
+                         .OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
+            {
+                bundle.Exes.Add(exe);
+            }
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not scan '{path}': {ex.Message}", isError: true);
+        }
+
+        _bundles.Add(bundle);
+        ApplySearchFilter();
+    }
+
+    private void OnRemoveBundleClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: BundleRow row })
+            _bundles.Remove(row);
+    }
+
+    // ── Start / Stop ──
 
     private async void OnStartClicked(object sender, RoutedEventArgs e)
     {
@@ -140,12 +347,16 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Builds an <see cref="ApplicationSettings"/> from the UI: the SOCKS5 proxy
-    /// fields and one rule per selected application (ordered by process name,
-    /// matching the RuleEngine first-match-wins semantics).
+    /// fields and the rules — selected processes (ordered by name), manual exe
+    /// rules, and folder bundles — matching the RuleEngine first-match-wins
+    /// semantics (rules are evaluated in list order).
     /// </summary>
     private ApplicationSettings BuildSettingsFromUi()
     {
-        var rules = _processes
+        var rules = new List<ApplicationRule>();
+
+        // Selected running processes → name rules.
+        rules.AddRange(_processes
             .Where(p => p.RouteViaProxy)
             .OrderBy(p => p.ProcessName, StringComparer.OrdinalIgnoreCase)
             .Select(p => new ApplicationRule
@@ -153,8 +364,26 @@ public partial class MainWindow : Window
                 ExecutableName = p.ProcessName,
                 Enabled = true,
                 Mode = ProxyMode.Proxy
-            })
-            .ToList();
+            }));
+
+        // Manual exe rules → name + path rules.
+        rules.AddRange(_manualRules
+            .Select(m => new ApplicationRule
+            {
+                ExecutableName = m.ExecutableName,
+                ExecutablePath = m.ExecutablePath,
+                Enabled = m.Enabled,
+                Mode = ProxyMode.Proxy
+            }));
+
+        // Folder bundles → folder rules.
+        rules.AddRange(_bundles
+            .Select(b => new ApplicationRule
+            {
+                FolderPath = b.FolderPath,
+                Enabled = b.Enabled,
+                Mode = b.ModeIndex == 0 ? ProxyMode.Proxy : ProxyMode.Direct
+            }));
 
         var proxy = new ProxyConfiguration
         {

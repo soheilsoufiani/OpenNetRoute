@@ -153,4 +153,68 @@ public class ApplicationRuleSetValidationTests
 
         Assert.Equal("Executable name must not be empty.", result.Errors[0]);
     }
+
+    // ── Folder/bundle rule set validation (Phase 10) ──
+
+    private static ApplicationRule FolderRule(string folder, ProxyMode mode = ProxyMode.Proxy)
+    {
+        return new ApplicationRule
+        {
+            FolderPath = folder,
+            Enabled = true,
+            Mode = mode
+        };
+    }
+
+    [Fact]
+    public void FolderRule_AndNameRule_ForSameExe_AreValid()
+    {
+        // A folder rule and a name rule are DIFFERENT identities — they do not
+        // conflict, even when the folder contains the named exe.
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps"),
+            Rule("myapp.exe", ProxyMode.Proxy)
+        };
+        Assert.True(ConfigurationValidator.ValidateRules(rules).IsValid);
+    }
+
+    [Fact]
+    public void DuplicateFolderRules_AreInvalid()
+    {
+        // Two folder rules on the SAME folder are ambiguous (duplicate identity).
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps"),
+            FolderRule(@"C:\Apps", ProxyMode.Direct)
+        };
+        var result = ConfigurationValidator.ValidateRules(rules);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("duplicate", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void FolderRules_DifferingByCase_AreInvalid()
+    {
+        // Folder matching is case-insensitive, so C:\Apps and c:\apps are the
+        // same bundle.
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps"),
+            FolderRule(@"c:\apps")
+        };
+        Assert.False(ConfigurationValidator.ValidateRules(rules).IsValid);
+    }
+
+    [Fact]
+    public void FolderRule_WithNullName_InSet_IsValid()
+    {
+        // A folder rule in a set may have no executable name.
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps"),
+            Rule("firefox.exe")
+        };
+        Assert.True(ConfigurationValidator.ValidateRules(rules).IsValid);
+    }
 }

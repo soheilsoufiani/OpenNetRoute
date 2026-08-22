@@ -41,11 +41,10 @@ public static class RuleEngine
 
     private static bool Matches(ApplicationRule rule, string? processName, string? processPath)
     {
-        if (string.IsNullOrWhiteSpace(rule.ExecutableName))
-            return false;
-
-        // Match by executable name (case-insensitive).
-        if (!string.IsNullOrWhiteSpace(processName) &&
+        // Match by executable name (case-insensitive). A rule with no name
+        // (e.g. a folder/bundle rule) cannot match by name.
+        if (!string.IsNullOrWhiteSpace(rule.ExecutableName) &&
+            !string.IsNullOrWhiteSpace(processName) &&
             string.Equals(processName, rule.ExecutableName, StringComparison.OrdinalIgnoreCase))
             return true;
 
@@ -54,6 +53,21 @@ public static class RuleEngine
             !string.IsNullOrWhiteSpace(rule.ExecutablePath) &&
             string.Equals(processPath, rule.ExecutablePath, StringComparison.OrdinalIgnoreCase))
             return true;
+
+        // Match by folder path (bundle rule): the process's executable path
+        // must be under the rule's folder at a DIRECTORY BOUNDARY. Normalize the
+        // folder's trailing separator, then require the separator after the
+        // prefix so "C:\prog" does NOT match "C:\programs". Case-insensitive.
+        if (!string.IsNullOrWhiteSpace(processPath) &&
+            !string.IsNullOrWhiteSpace(rule.FolderPath))
+        {
+            var folder = rule.FolderPath.TrimEnd('\\', '/');
+            if (folder.Length > 0 &&
+                processPath.StartsWith(folder + '\\', StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
 
         return false;
     }

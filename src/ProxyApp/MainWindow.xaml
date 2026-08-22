@@ -1,10 +1,10 @@
-﻿<Window x:Class="ProxyApp.MainWindow"
+<Window x:Class="ProxyApp.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="MyProxy" Height="560" Width="680" MinHeight="480" MinWidth="600">
+        Title="MyProxy" Height="720" Width="720" MinHeight="560" MinWidth="640">
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -47,37 +47,116 @@
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <Grid Grid.Row="0">
+                <!-- Search + actions row -->
+                <Grid Grid.Row="0" Margin="0,0,0,6">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="Select applications to route. Leave unchecked for Direct."
-                               VerticalAlignment="Center" Margin="0,0,0,6" Foreground="Gray"/>
-                    <Button Grid.Column="1" x:Name="RefreshButton" Content="Refresh" Margin="0,0,0,6" Padding="12,2" Click="OnRefreshClicked"/>
+                    <TextBox x:Name="SearchBox" Grid.Column="0" TextChanged="OnSearchTextChanged"
+                             ToolTip="Filter by process name, path, or bundle name"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button x:Name="AddExeButton" Content="Add EXE..." Margin="6,0,0,0" Padding="10,2" Click="OnAddExeClicked"/>
+                        <Button x:Name="AddFolderButton" Content="Add Folder..." Margin="6,0,0,0" Padding="10,2" Click="OnAddFolderClicked"/>
+                        <Button x:Name="RefreshButton" Content="Refresh" Margin="6,0,0,0" Padding="10,2" Click="OnRefreshClicked"/>
+                    </StackPanel>
                 </Grid>
 
-                <ListView x:Name="ProcessList" Grid.Row="1" Height="220" BorderThickness="1">
-                    <ListView.View>
-                        <GridView>
-                            <GridViewColumn Header="Route" Width="70">
-                                <GridViewColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <CheckBox IsChecked="{Binding RouteViaProxy}"
-                                                  ToolTip="Route through the SOCKS5 proxy"/>
-                                    </DataTemplate>
-                                </GridViewColumn.CellTemplate>
-                            </GridViewColumn>
-                            <GridViewColumn Header="Process" Width="220"
-                                            DisplayMemberBinding="{Binding ProcessName}"/>
-                            <GridViewColumn Header="Path" Width="300"
-                                            DisplayMemberBinding="{Binding ProcessPath}"/>
-                        </GridView>
-                    </ListView.View>
-                </ListView>
+                <TextBlock Grid.Row="1" Text="Select applications to route. Leave unchecked for Direct."
+                           VerticalAlignment="Center" Margin="0,0,0,4" Foreground="Gray"/>
+
+                <!-- Unified scrollable rules area: process rows + manual rules + bundles -->
+                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" MaxHeight="340">
+                    <StackPanel>
+                        <!-- Running processes -->
+                        <TextBlock Text="Running processes" FontWeight="SemiBold" Margin="0,2,0,2"/>
+                        <ListView x:Name="ProcessList" Height="160" BorderThickness="1">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Route" Width="70">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <CheckBox IsChecked="{Binding RouteViaProxy}"
+                                                          ToolTip="Route through the SOCKS5 proxy"/>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                    <GridViewColumn Header="Process" Width="180"
+                                                    DisplayMemberBinding="{Binding ProcessName}"/>
+                                    <GridViewColumn Header="Path" Width="300"
+                                                    DisplayMemberBinding="{Binding ProcessPath}"/>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+
+                        <!-- Manual exe rules -->
+                        <TextBlock Text="Manual rules" FontWeight="SemiBold" Margin="0,8,0,2"/>
+                        <ListView x:Name="ManualRuleList" Height="Auto" MaxHeight="140" BorderThickness="1"
+                                  ItemsSource="{Binding}">
+                            <ListView.View>
+                                <GridView>
+                                    <GridViewColumn Header="Route" Width="70">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <CheckBox IsChecked="{Binding Enabled}"
+                                                          ToolTip="Route through the SOCKS5 proxy"/>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                    <GridViewColumn Header="Executable" Width="200"
+                                                    DisplayMemberBinding="{Binding ExecutableName}"/>
+                                    <GridViewColumn Header="Path" Width="280"
+                                                    DisplayMemberBinding="{Binding ExecutablePath}"/>
+                                    <GridViewColumn Header="" Width="40">
+                                        <GridViewColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Button Content="✕" FontSize="10" Padding="4,0"
+                                                        Click="OnRemoveManualRuleClicked"
+                                                        Tag="{Binding}"/>
+                                            </DataTemplate>
+                                        </GridViewColumn.CellTemplate>
+                                    </GridViewColumn>
+                                </GridView>
+                            </ListView.View>
+                        </ListView>
+
+                        <!-- Folder bundles -->
+                        <TextBlock Text="Folder bundles" FontWeight="SemiBold" Margin="0,8,0,2"/>
+                        <ItemsControl x:Name="BundleList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Expander Header="{Binding DisplayName}" Margin="0,0,0,4">
+                                        <StackPanel Margin="16,4,0,4">
+                                            <TextBlock Text="{Binding FolderPath}" Foreground="Gray" TextWrapping="Wrap"/>
+                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                <CheckBox Content="Enabled" IsChecked="{Binding Enabled}" VerticalAlignment="Center"/>
+                                                <ComboBox SelectedIndex="{Binding ModeIndex}" Width="90" Margin="8,0,0,0">
+                                                    <ComboBoxItem Content="Proxy"/>
+                                                    <ComboBoxItem Content="Direct"/>
+                                                </ComboBox>
+                                                <Button Content="✕" FontSize="10" Padding="4,0" Margin="8,0,0,0"
+                                                        Click="OnRemoveBundleClicked" Tag="{Binding}"/>
+                                            </StackPanel>
+                                            <TextBlock Text="Executables (matched by folder at connect time):"
+                                                       FontSize="11" Foreground="Gray" Margin="0,6,0,2"/>
+                                            <ItemsControl ItemsSource="{Binding Exes}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Text="{Binding}" FontSize="11" Margin="8,0,0,0"/>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </Expander>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </ScrollViewer>
             </Grid>
         </GroupBox>
 

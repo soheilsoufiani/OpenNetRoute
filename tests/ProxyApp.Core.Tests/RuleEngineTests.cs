@@ -155,6 +155,146 @@ public class RuleEngineTests
         Assert.Equal(ProxyMode.Direct, RuleEngine.Evaluate(rules, "curl.exe", @"C:\Tools\curl.exe"));
     }
 
+    // ── Folder/bundle rule matching (Phase 10) ──
+
+    private static ApplicationRule FolderRule(string folder, ProxyMode mode = ProxyMode.Proxy, bool enabled = true)
+    {
+        return new ApplicationRule
+        {
+            FolderPath = folder,
+            Enabled = enabled,
+            Mode = mode
+        };
+    }
+
+    [Fact]
+    public void FolderRule_MatchesExecutableUnderFolder()
+    {
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps")
+        };
+        Assert.Equal(ProxyMode.Proxy,
+            RuleEngine.Evaluate(rules, "myapp.exe", @"C:\Apps\myapp.exe"));
+    }
+
+    [Fact]
+    public void FolderRule_MatchesNestedExecutable()
+    {
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps")
+        };
+        Assert.Equal(ProxyMode.Proxy,
+            RuleEngine.Evaluate(rules, "child.exe", @"C:\Apps\sub\child.exe"));
+    }
+
+    [Fact]
+    public void FolderRule_DoesNotMatchPathOutsideFolder()
+    {
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps")
+        };
+        Assert.Equal(ProxyMode.Direct,
+            RuleEngine.Evaluate(rules, "other.exe", @"C:\Other\other.exe"));
+    }
+
+    [Fact]
+    public void FolderRule_Boundary_DoesNotMatchSimilarPrefixFolder()
+    {
+        // C:\prog must NOT match C:\programs — requires a directory boundary.
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\prog")
+        };
+        Assert.Equal(ProxyMode.Direct,
+            RuleEngine.Evaluate(rules, "app.exe", @"C:\programs\app.exe"));
+    }
+
+    [Fact]
+    public void FolderRule_TrailingSeparator_Normalized()
+    {
+        // A trailing separator on the folder is normalized away; the boundary
+        // check still applies.
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps\")
+        };
+        Assert.Equal(ProxyMode.Proxy,
+            RuleEngine.Evaluate(rules, "myapp.exe", @"C:\Apps\myapp.exe"));
+    }
+
+    [Fact]
+    public void FolderRule_IsCaseInsensitive()
+    {
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"c:\apps")
+        };
+        Assert.Equal(ProxyMode.Proxy,
+            RuleEngine.Evaluate(rules, "myapp.exe", @"C:\APPS\MyApp.exe"));
+    }
+
+    [Fact]
+    public void DisabledFolderRule_IsSkipped()
+    {
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps", ProxyMode.Proxy, enabled: false)
+        };
+        Assert.Equal(ProxyMode.Direct,
+            RuleEngine.Evaluate(rules, "myapp.exe", @"C:\Apps\myapp.exe"));
+    }
+
+    [Fact]
+    public void FolderRule_DoesNotMatchWhenProcessPathUnknown()
+    {
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps")
+        };
+        Assert.Equal(ProxyMode.Direct, RuleEngine.Evaluate(rules, "myapp.exe", null));
+    }
+
+    [Fact]
+    public void FolderRule_ParticipatesInListOrderPrecedence()
+    {
+        // First enabled matching rule wins, whether it matched by name, path,
+        // or folder. A Direct folder rule ahead of a Proxy name rule wins.
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps", ProxyMode.Direct),
+            Rule("myapp.exe", ProxyMode.Proxy)
+        };
+        Assert.Equal(ProxyMode.Direct,
+            RuleEngine.Evaluate(rules, "myapp.exe", @"C:\Apps\myapp.exe"));
+    }
+
+    [Fact]
+    public void NameRule_ParticipatesInListOrderPrecedence_OverFolderRule()
+    {
+        // A name rule ahead of a folder rule wins.
+        var rules = new List<ApplicationRule>
+        {
+            Rule("myapp.exe", ProxyMode.Direct),
+            FolderRule(@"C:\Apps", ProxyMode.Proxy)
+        };
+        Assert.Equal(ProxyMode.Direct,
+            RuleEngine.Evaluate(rules, "myapp.exe", @"C:\Apps\myapp.exe"));
+    }
+
+    [Fact]
+    public void NoMatchingFolderRule_ReturnsDirect()
+    {
+        var rules = new List<ApplicationRule>
+        {
+            FolderRule(@"C:\Apps")
+        };
+        Assert.Equal(ProxyMode.Direct,
+            RuleEngine.Evaluate(rules, "myapp.exe", @"D:\Apps\myapp.exe"));
+    }
+
     [Fact]
     public void NullProcessName_WithNameRule_ReturnsDirect()
     {

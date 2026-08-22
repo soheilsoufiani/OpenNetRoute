@@ -175,4 +175,98 @@ public class ApplicationRuleValidationTests
 
         Assert.Equal(name, rule.ExecutableName);
     }
+
+    // ── Folder/bundle rule validation (Phase 10) ──
+
+    [Fact]
+    public void FolderRule_NullName_IsValid()
+    {
+        // A folder/bundle rule may have no executable name — it matches by
+        // FolderPath prefix. The name validation is skipped in that case.
+        var rule = new ApplicationRule
+        {
+            FolderPath = @"C:\Apps",
+            Enabled = true,
+            Mode = ProxyMode.Proxy
+        };
+        Assert.True(ConfigurationValidator.Validate(rule).IsValid);
+    }
+
+    [Fact]
+    public void FolderRule_WithValidName_IsValid()
+    {
+        // A folder rule may also carry an executable name (it still matches
+        // by folder, but the name is not invalid — it's simply unused).
+        var rule = new ApplicationRule
+        {
+            ExecutableName = "myapp.exe",
+            FolderPath = @"C:\Apps",
+            Enabled = true,
+            Mode = ProxyMode.Proxy
+        };
+        Assert.True(ConfigurationValidator.Validate(rule).IsValid);
+    }
+
+    [Fact]
+    public void FolderRule_EmptyPath_IsInvalid()
+    {
+        var rule = new ApplicationRule
+        {
+            FolderPath = "",
+            Mode = ProxyMode.Proxy
+        };
+        Assert.False(ConfigurationValidator.Validate(rule).IsValid);
+    }
+
+    [Fact]
+    public void FolderRule_NullPath_IsInvalid()
+    {
+        // Null FolderPath + null name → no identity → invalid.
+        var rule = new ApplicationRule
+        {
+            FolderPath = null,
+            ExecutableName = null,
+            Mode = ProxyMode.Proxy
+        };
+        Assert.False(ConfigurationValidator.Validate(rule).IsValid);
+    }
+
+    [Fact]
+    public void FolderRule_OverlongPath_IsInvalid()
+    {
+        var rule = new ApplicationRule
+        {
+            FolderPath = new string('a', ConfigurationValidator.MaxExecutablePathLength + 1),
+            Mode = ProxyMode.Proxy
+        };
+        var result = ConfigurationValidator.Validate(rule);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("1024", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void FolderRule_NonRootedPath_IsInvalid()
+    {
+        var rule = new ApplicationRule
+        {
+            FolderPath = @"relative\path",
+            Mode = ProxyMode.Proxy
+        };
+        var result = ConfigurationValidator.Validate(rule);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("not a rooted path", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void FolderRule_PathWithNullCharacter_IsInvalid()
+    {
+        var rule = new ApplicationRule
+        {
+            FolderPath = @"C:\Apps\myapp.exe" + '\0',
+            Mode = ProxyMode.Proxy
+        };
+        var result = ConfigurationValidator.Validate(rule);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("null character", StringComparison.OrdinalIgnoreCase));
+    }
 }
