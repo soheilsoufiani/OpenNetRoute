@@ -1,5 +1,6 @@
 using System.Net;
 using System.Threading.Channels;
+using ProxyApp.Network;
 
 namespace ProxyApp.WinDivert;
 
@@ -16,6 +17,9 @@ namespace ProxyApp.WinDivert;
 /// </summary>
 internal sealed class FlowState
 {
+    /// <summary>Maximum pending-buffer size (64 KB).</summary>
+    internal const int MaxPendingBufferSize = 64 * 1024;
+
     /// <summary>The connection's 4-tuple.</summary>
     public FlowKey Key { get; }
 
@@ -39,6 +43,110 @@ internal sealed class FlowState
 
     /// <summary>The owning PID, resolved at SYN-capture time.</summary>
     public int ProcessId { get; set; }
+
+    // ── Parallel-establishment state ──
+
+    /// <summary>
+    /// True once the SOCKS5 CONNECT has completed (success or failure). The
+    /// per-flow consumer checks this flag to decide whether to buffer client
+    /// payload or relay normally. Written by the CONNECT completion task; read
+    /// by the per-flow consumer (<see cref="HandleExistingFlowAsync"/>).
+    /// </summary>
+    private bool _upstreamReady;
+
+    /// <inheritdoc cref="_upstreamReady"/>
+    public bool UpstreamReady
+    {
+        get => Volatile.Read(ref _upstreamReady);
+        set => Volatile.Write(ref _upstreamReady, value);
+    }
+
+    /// <summary>
+    /// The completed SOCKS5 CONNECT, held here while it waits to be claimed by
+    /// the per-flow consumer (which applies it: flush buffer → set stream →
+    /// start pump). Claimed via <see cref="TryClaimPendingUpstream"/> so the
+    /// connection is never orphaned (if the flow is cleaned up while the
+    /// CONNECT is in flight, <see cref="CleanupFlow"/> disposes this instead).
+    /// Written by the CONNECT completion task; read/claimed by the per-flow
+    /// consumer and by cleanup.
+    /// </summary>
+    private Socks5Connection? _pendingUpstream;
+
+    /// <summary>
+    /// Claims the completed upstream connection, clearing the field. Returns
+    /// null when there is nothing to claim. Thread-safe (single atomic
+    /// exchange).
+    /// </summary>
+    public Socks5Connection? TryClaimPendingUpstream()
+        => Interlocked.Exchange(ref _pendingUpstream, null);
+
+    /// <summary>
+    /// Stores the completed upstream connection for the consumer to claim.
+    /// Returns true if the connection was stored; false if a connection was
+    /// already pending (should never happen — one CONNECT per flow).
+    /// </summary>
+    public bool TryStorePendingUpstream(Socks5Connection conn)
+        => Interlocked.CompareExchange(ref _pendingUpstream, conn, null) == null;
+
+    /// <summary>
+    /// Bounded pending buffer for client payload bytes that arrive before the
+    /// SOCKS5 CONNECT completes. Protected by <see cref="_pendingLock"/> so the
+    /// per-flow consumer (writer) and CONNECT completion (reader) do not race.
+    /// </summary>
+    private readonly object _pendingLock = new();
+    private byte[]? _pendingBuffer;
+    private int _pendingBufferLen;
+
+    /// <summary>
+    /// Appends client payload bytes to the pending buffer (up to
+    /// <see cref="MaxPendingBufferSize"/>). Returns true on success, false on
+    /// overflow. The caller must still increment <see cref="ClientBytesSent"/>
+    /// so the ACK framing stays correct.
+    ///
+    /// Thread-safe: the per-flow consumer calls this from the serialized channel,
+    /// and the CONNECT completion may call <see cref="DrainPendingBuffer"/> from
+    /// a background task concurrently.
+    /// </summary>
+    public bool TryAppendPendingBuffer(ReadOnlySpan<byte> data)
+    {
+        lock (_pendingLock)
+        {
+            if (_pendingBufferLen + data.Length > MaxPendingBufferSize)
+                return false;
+            if (_pendingBuffer == null || _pendingBuffer.Length < _pendingBufferLen + data.Length)
+                Array.Resize(ref _pendingBuffer, Math.Max(_pendingBufferLen + data.Length, 1024));
+            data.CopyTo(_pendingBuffer.AsSpan(_pendingBufferLen));
+            _pendingBufferLen += data.Length;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Extracts all buffered payload bytes and clears the buffer. Returns null
+    /// when the buffer is empty. Called once by the CONNECT-establish action
+    /// (enqueued on the per-flow channel) before the upstream is set.
+    ///
+    /// Thread-safe (acquires <see cref="_pendingLock"/>).
+    /// </summary>
+    public byte[]? DrainPendingBuffer()
+    {
+        lock (_pendingLock)
+        {
+            if (_pendingBufferLen == 0)
+                return null;
+            var result = _pendingBuffer.AsSpan(0, _pendingBufferLen).ToArray();
+            _pendingBufferLen = 0;
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Current pending-buffer length in bytes (for diagnostics). Thread-safe.
+    /// </summary>
+    public int PendingBufferLength
+    {
+        get { lock (_pendingLock) { return _pendingBufferLen; } }
+    }
 
     // ── Data-translation state ──
 
@@ -117,8 +225,13 @@ internal sealed class FlowState
 
     private readonly Channel<Func<Task>> _processing = Channel.CreateUnbounded<Func<Task>>();
 
-    /// <summary>Enqueues a packet-processing step for this flow (non-blocking).</summary>
-    public void EnqueueProcessing(Func<Task> work) => _processing.Writer.TryWrite(work);
+    /// <summary>
+    /// Enqueues a packet-processing step for this flow (non-blocking). Returns
+    /// false when the channel has been completed (flow cleaned up) and the work
+    /// was NOT enqueued — the caller must then dispose any resources it holds
+    /// (e.g. a completed SOCKS5 connection) instead of leaking them.
+    /// </summary>
+    public bool EnqueueProcessing(Func<Task> work) => _processing.Writer.TryWrite(work);
 
     /// <summary>The reader the per-flow consumer drains.</summary>
     public ChannelReader<Func<Task>> ProcessingReader => _processing.Reader;

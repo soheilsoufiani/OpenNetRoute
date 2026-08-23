@@ -9,11 +9,13 @@ using ProxyApp.Network;
 namespace ProxyApp.WinDivert;
 
 /// <summary>
-/// The TCP redirection engine (ferry). This is the initial minimal version that
-/// validates the production code paths reproduce the E5b/E7 spike results:
-/// capture a SYN → attribute the process → hold → inject a crafted SYN-ACK →
-/// observe the client's ACK. SOCKS5 integration and bidirectional data relay
-/// are added incrementally in later steps.
+/// The TCP redirection engine (ferry). It captures outbound SYNs from selected
+/// processes, injects a crafted SYN-ACK so the client's handshake completes
+/// with ~zero added delay, and establishes the SOCKS5 upstream IN PARALLEL —
+/// the client's first payload is buffered (bounded) until the upstream is
+/// ready, then relayed. Bidirectional data relay uses the E5b/E7-validated
+/// packet semantics (S1 ISN, window 0x7210, PSH|ACK data, separate FIN|ACK,
+/// inbound injection, Impostor unset).
 ///
 /// The ferry runs on a background task and is controlled by Start/Stop methods.
 /// </summary>
@@ -23,22 +25,18 @@ internal sealed class TcpFerry : IDisposable
     internal const uint DefaultServerIsn = 0x12345678;
 
     /// <summary>
-    /// Default SYN hold time before injecting the crafted SYN-ACK (milliseconds).
-    /// 600ms was the original default but it adds that delay to EVERY new
-    /// connection before the SYN-ACK is injected — a browser opening many
-    /// concurrent connections pays it per connection, dominating perceived
-    /// latency. 100ms is the value validated by the elevated E2E tests (which
-    /// already used holdTimeoutMs: 100) and is browser-friendly: long enough
-    /// for the SOCKS5 CONNECT to complete concurrently, short enough that a
-    /// browser's per-connection setup cost is small.
+    /// Retained for backward compatibility with the serial-establishment design
+    /// (the SYN-ACK was held until the SOCKS5 CONNECT finished, adding that
+    /// delay to EVERY new connection). Parallel establishment (SYN-ACK injected
+    /// immediately, CONNECT in flight) removes the hold entirely — the constant
+    /// is pinned to 0 so a stale caller cannot reintroduce a delay.
     /// </summary>
-    internal const int DefaultHoldMs = 100;
+    internal const int DefaultHoldMs = 0;
 
     /// <summary>Default idle timeout for proxied flows.</summary>
     internal static readonly TimeSpan DefaultIdleTimeout = TimeSpan.FromMinutes(2);
 
     private readonly string _captureFilter;
-    private readonly int _holdTimeoutMs;
     private readonly TimeSpan _idleTimeout;
     private readonly IConnectionProcessResolver _processResolver;
     private readonly IReadOnlyList<ApplicationRule> _rules;
@@ -54,19 +52,19 @@ internal sealed class TcpFerry : IDisposable
     private void Trace(string message) => _trace?.Invoke($"[TcpFerry] {message}");
 
     /// <summary>
-    /// Creates a ferry with the given capture filter and hold timeout.
+    /// Creates a ferry with the given capture filter.
     /// </summary>
+    /// <param name="socks5Client">The SOCKS5 client used for upstream connections.</param>
+    /// <param name="processResolver">Optional process resolver (defaults to a pass-through that never attributes).</param>
+    /// <param name="rules">Optional application rules (defaults to empty).</param>
     /// <param name="captureFilter">
     /// WinDivert filter string for the network-layer capture handle.
     /// Default: "outbound and ip and tcp and not loopback".
     /// </param>
-    /// <param name="holdTimeoutMs">
-    /// How long to hold the client SYN before injecting the crafted SYN-ACK
-    /// (default: 600ms, validated in E7).
-    /// </param>
     /// <param name="idleTimeout">
     /// Idle timeout for proxied flows (default: 2 minutes).
     /// </param>
+    /// <param name="trace">Optional diagnostic trace sink.</param>
     public TcpFerry(
         ISocks5Client socks5Client,
         IConnectionProcessResolver? processResolver = null,
@@ -80,9 +78,15 @@ internal sealed class TcpFerry : IDisposable
         _processResolver = processResolver ?? new DefaultPassThroughResolver();
         _rules = rules ?? Array.Empty<ApplicationRule>();
         _captureFilter = captureFilter ?? "outbound and ip and tcp and not loopback";
-        _holdTimeoutMs = holdTimeoutMs > 0 ? holdTimeoutMs : DefaultHoldMs;
         _idleTimeout = idleTimeout ?? DefaultIdleTimeout;
         _trace = trace;
+
+        // The SYN-ACK is injected IMMEDIATELY on SYN capture; the SOCKS5 CONNECT
+        // runs in parallel. The old serial hold (600ms → 100ms) added the full
+        // proxy round-trip to EVERY connection's handshake, which a browser
+        // opening many concurrent connections paid per connection — the
+        // handshake now completes in ~0 added delay regardless of CONNECT time.
+        _ = holdTimeoutMs; // retained (dead) parameter for source compatibility
     }
 
     /// <summary>True when the capture loop is running.</summary>
@@ -154,6 +158,7 @@ internal sealed class TcpFerry : IDisposable
         foreach (var flow in orphaned)
         {
             try { flow.UpstreamStream?.Dispose(); } catch { }
+            try { flow.TryClaimPendingUpstream()?.Dispose(); } catch { }
             try { flow.LoopCts?.Cancel(); } catch { }
             try { flow.LoopCts?.Dispose(); } catch { }
         }
@@ -224,7 +229,8 @@ internal sealed class TcpFerry : IDisposable
                     continue;
                 }
 
-                // ── New SYN: attribute, hold, and inject crafted SYN-ACK.
+                // ── New SYN: attribute, inject crafted SYN-ACK immediately,
+                //    and establish the SOCKS5 upstream in parallel.
                 //    Dispatched to a background task so the loop is not blocked
                 //    by the SOCKS5 CONNECT (which can take seconds). The flow is
                 //    added to the table before the CONNECT, so a retransmitted
@@ -250,7 +256,15 @@ internal sealed class TcpFerry : IDisposable
 
     /// <summary>
     /// Handles a new pure SYN: attribute the owning process, apply rules, and
-    /// either hold+ferry (Proxy) or reinject unchanged (Direct / no match).
+    /// either ferry (Proxy) or reinject unchanged (Direct / no match).
+    ///
+    /// For proxied flows the crafted SYN-ACK is injected IMMEDIATELY (before the
+    /// upstream is established), so the client's TCP handshake completes with
+    /// ~zero added delay; the SOCKS5 CONNECT runs in parallel and the client's
+    /// first payload is buffered until it completes (see
+    /// <see cref="HandleExistingFlowAsync"/>). On CONNECT failure the client is
+    /// reset — the failure path is retained, it just happens after the
+    /// handshake instead of before it.
     /// </summary>
     private async Task HandleNewSynAsync(
         byte[] buffer, uint readLen, TcpTuple tuple, WinDivertAddress addr,
@@ -299,29 +313,19 @@ internal sealed class TcpFerry : IDisposable
             return;
         }
 
-        // ── R4: hold the SYN while the upstream is established ──
-        // The upstream SOCKS5 connection is established concurrently with the hold
-        // so we don't add the hold time on top of the proxy latency.
-        var destination = new Socks5Destination(tuple.DstIp.ToString(), tuple.DstPort);
-        Trace($"Establishing SOCKS5 upstream to {tuple.DstIp}:{tuple.DstPort} via proxy...");
-        var upstream = await EstablishUpstreamAsync(destination, ct);
-        if (upstream == null)
-        {
-            Trace($"SOCKS5 upstream failed — injecting RST.");
-            InjectRstToClient(tuple, flow);
-            CleanupFlow(flowKey, flow);
-            return;
-        }
-        Trace($"SOCKS5 upstream established.");
+        // ── Start the per-flow consumer NOW (not at pump start). The capture
+        //    loop enqueues client packets while the flow is still Connecting;
+        //    the consumer drains them serially, which the buffering path in
+        //    HandleExistingFlowAsync depends on (bounded pending buffer). It
+        //    also applies the completed CONNECT in order. ──
+        flow.LoopCts = CancellationTokenSource.CreateLinkedTokenSource(_cts?.Token ?? CancellationToken.None);
+        StartFlowProcessing(flow, flow.LoopCts.Token);
 
-        // Hold the SYN for the remainder of the configured hold period.
-        await Task.Delay(_holdTimeoutMs, ct);
-
-        // Store the upstream stream in the flow.
-        flow.UpstreamStream = upstream.Stream;
-        flow.Status = FlowStatus.Established;
-
-        // ── Inject crafted SYN-ACK (E5b/E7 validated semantics) ──
+        // ── Inject the crafted SYN-ACK IMMEDIATELY (E5b/E7 validated semantics).
+        //    The client's handshake completes NOW; the upstream is established
+        //    in parallel below. The SYN itself is NOT re-injected — the ferry
+        //    consumes it, exactly as before. ──
+        var stopwatch = Stopwatch.StartNew();
         Trace($"Injecting crafted SYN-ACK seq={DefaultServerIsn} ack={tuple.Seq + 1u}");
         var synAck = TcpPacketBuilder.BuildSynAck(
             tuple.DstIp, tuple.SrcIp, tuple.DstPort, tuple.SrcPort,
@@ -339,23 +343,135 @@ internal sealed class TcpFerry : IDisposable
             CleanupFlow(flowKey, flow);
             return;
         }
+        Trace($"SYN-ACK injected in {stopwatch.ElapsedMilliseconds}ms");
 
         flow.Touch();
 
-        // ── Step 3C: start the upstream→client read pump ──
+        // ── Establish the SOCKS5 upstream IN PARALLEL. The handshake has
+        //    already completed, so the CONNECT time is hidden from the client.
+        //    The result is applied via the flow's processing channel (serialized
+        //    with packet processing): on success the upstream stream is set, any
+        //    buffered client payload is flushed first, and the read pump starts;
+        //    on failure the client is reset and the flow removed. ──
+        //
+        //    The per-flow consumer started above drains the channel serially
+        //    even while Connecting — so client payload arriving during the
+        //    CONNECT is buffered (bounded) and the completed CONNECT is applied
+        //    in order.
+        var destination = new Socks5Destination(tuple.DstIp.ToString(), tuple.DstPort);
+        Trace($"Establishing SOCKS5 upstream to {tuple.DstIp}:{tuple.DstPort} via proxy (parallel)...");
+        var connectStopwatch = Stopwatch.StartNew();
+        var upstream = await EstablishUpstreamAsync(destination, ct);
+        connectStopwatch.Stop();
+        Trace($"SOCKS5 CONNECT {destination.Host}:{destination.Port} " +
+              $"{(upstream == null ? "FAILED" : "OK")} in {connectStopwatch.ElapsedMilliseconds}ms");
+
+        if (upstream == null)
+        {
+            // CONNECT failed AFTER the SYN-ACK was injected — reset the client
+            // so it sees connection-refused rather than a hang, and clean up.
+            // The RST+cleanup is enqueued (serialized with packet processing);
+            // if the flow was already cleaned up (channel completed), the
+            // enqueue fails and the cleanup already happened.
+            Trace($"SOCKS5 upstream failed — injecting RST to client.");
+            flow.EnqueueProcessing(() =>
+            {
+                InjectRstToClient(tuple, flow);
+                CleanupFlow(flowKey, flow);
+                return Task.CompletedTask;
+            });
+            return;
+        }
+
+        // CONNECT succeeded. Store the connection so the per-flow consumer can
+        // claim it; the consumer's establish-action flushes any buffered client
+        // payload first, then starts the normal relay. If the flow was already
+        // cleaned up (client FIN, stop, timeout), CleanupFlow disposes the
+        // stored connection — it is never orphaned.
+        if (!flow.TryStorePendingUpstream(upstream))
+        {
+            // Should not happen (one CONNECT per flow) — dispose defensively.
+            upstream.Dispose();
+            return;
+        }
+
+        // Enqueue the apply action. If the enqueue fails the channel was
+        // completed — which only happens in CleanupFlow, and cleanup claims
+        // and disposes the pending upstream — so there is nothing more to do.
+        if (!flow.EnqueueProcessing(() => ApplyUpstreamEstablishedAsync(flow, tuple, ct)))
+        {
+            Trace($"Flow {flow.Key} cleaned up during CONNECT — upstream already disposed by cleanup.");
+        }
+    }
+
+    /// <summary>
+    /// Applies a completed SOCKS5 CONNECT to the flow: flushes any buffered
+    /// client payload, sets the upstream stream, marks the flow Established,
+    /// and starts the read pump. Runs on the flow's processing channel so it
+    /// is serialized with packet processing.
+    /// </summary>
+    private async Task ApplyUpstreamEstablishedAsync(
+        FlowState flow, TcpTuple tuple, CancellationToken ct)
+    {
+        var upstream = flow.TryClaimPendingUpstream();
+        if (upstream == null)
+        {
+            // Nothing to claim (cleanup already disposed it) — nothing to do.
+            return;
+        }
+
+        // The flow may have been cleaned up while the CONNECT was in flight
+        // (client FIN, ferry stop, idle expiry). The stream is then disposed —
+        // never written through a dead flow.
+        if (!_flowTable.Contains(flow.Key))
+        {
+            Trace($"Flow {flow.Key} cleaned up during CONNECT — disposing upstream.");
+            upstream.Dispose();
+            return;
+        }
+
+        // Flush buffered client payload (arrived before CONNECT completed)
+        // before any newly-captured bytes, preserving ordering.
+        var buffered = flow.DrainPendingBuffer();
+        if (buffered != null && buffered.Length > 0)
+        {
+            try
+            {
+                Trace($"Flushing {buffered.Length} buffered client bytes to upstream for {flow.Key}");
+                await upstream.Stream.WriteAsync(buffered, ct);
+                flow.Touch();
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Trace($"Buffered flush failed for {flow.Key}: {ex.Message}");
+                InjectRstToClient(tuple, flow);
+                CleanupFlow(flow.Key, flow);
+                upstream.Dispose();
+                return;
+            }
+        }
+
+        flow.UpstreamStream = upstream.Stream;
+        flow.Status = FlowStatus.Established;
+        flow.UpstreamReady = true;
+        flow.Touch();
+
+        Trace($"SOCKS5 upstream established for {flow.Key} — flow is ready.");
         StartUpstreamReadPump(flow, tuple);
     }
 
     /// <summary>
     /// Starts the upstream→client read pump for an established flow. Reads bytes
     /// from the upstream stream and injects crafted inbound packets (Step 3C).
-    /// Runs in the background; each flow has its own loop.
+    /// Runs in the background; each flow has its own loop. The per-flow
+    /// processing consumer was already started at SYN-capture time (it must
+    /// drain packets while the flow is still Connecting), so it is NOT started
+    /// here again.
     /// </summary>
     private void StartUpstreamReadPump(FlowState flow, TcpTuple clientSynTuple)
     {
-        var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(_cts?.Token ?? CancellationToken.None);
-        flow.LoopCts = pumpCts;
-        var task = Task.Run(() => UpstreamReadPumpAsync(flow, clientSynTuple, pumpCts.Token), pumpCts.Token);
+        var ct = flow.LoopCts?.Token ?? CancellationToken.None;
+        var task = Task.Run(() => UpstreamReadPumpAsync(flow, clientSynTuple, ct), ct);
 
         // Safety net for abnormal exits: if the pump ends and the client's FIN
         // never arrives (upstream error, client vanished, or the pump was
@@ -373,11 +489,6 @@ internal sealed class TcpFerry : IDisposable
                 CleanupFlow(flow.Key, flow);
             }
         }, TaskScheduler.Default);
-
-        // Start the per-flow packet-processing consumer. It drains the flow's
-        // processing channel serially, so different flows never block each
-        // other even though the capture loop enqueues from a single thread.
-        StartFlowProcessing(flow, pumpCts.Token);
     }
 
     /// <summary>
@@ -600,15 +711,24 @@ internal sealed class TcpFerry : IDisposable
     }
 
     /// <summary>
-    /// Injects a crafted RST to the client for the given SYN, so the client sees
-    /// connection-refused rather than hanging. Uses the E5b injection pattern
-    /// (inbound, Impostor NOT set, helper checksums).
+    /// Injects a crafted RST to the client, so the client sees a reset rather
+    /// than hanging. Uses the E5b injection pattern (inbound, Impostor NOT set,
+    /// helper checksums).
+    ///
+    /// Seq/ack framing: the RST is sent with the server's next send seq and the
+    /// client's next expected ack (<see cref="FlowState.NextServerSeq"/> /
+    /// <see cref="FlowState.NextClientAck"/>). This is the correct framing for
+    /// the ESTABLISHED state — the parallel-establishment design injects the
+    /// SYN-ACK first, so a CONNECT-failure RST arrives AFTER the handshake
+    /// completed and must be in the client's receive window. (In SYN-SENT the
+    /// client accepts any RST seq, so this framing is also fine for the
+    /// SYN-ACK-injection-failure path.)
     /// </summary>
     private void InjectRstToClient(TcpTuple tuple, FlowState flow)
     {
         var rst = TcpPacketBuilder.BuildRst(
             tuple.DstIp, tuple.SrcIp, tuple.DstPort, tuple.SrcPort,
-            DefaultServerIsn, tuple.Seq);
+            flow.NextServerSeq, flow.NextClientAck);
 
         var addr = flow.SynAddress;
         addr.LayerEventFlags &= ~(1uL << 17); // inbound
@@ -616,12 +736,16 @@ internal sealed class TcpFerry : IDisposable
         WinDivertNative.WinDivertSend(_captureHandle, rst, (uint)rst.Length, IntPtr.Zero, ref addr);
     }
 
-    /// <summary>Removes a flow and disposes its upstream stream.</summary>
+    /// <summary>
+    /// Removes a flow and disposes its upstream stream (including any CONNECT
+    /// that completed but was not yet claimed).
+    /// </summary>
     private void CleanupFlow(FlowKey key, FlowState flow)
     {
         if (_flowTable.TryRemove(key, out _))
         {
             try { flow.UpstreamStream?.Dispose(); } catch { }
+            try { flow.TryClaimPendingUpstream()?.Dispose(); } catch { }
             try { flow.LoopCts?.Cancel(); } catch { }
             try { flow.LoopCts?.Dispose(); } catch { }
             flow.CompleteProcessing(); // lets the per-flow consumer exit
@@ -636,16 +760,28 @@ internal sealed class TcpFerry : IDisposable
     /// the ferry. Pure ACKs (no payload) are dropped, but their ACK sequence is
     /// recorded so a pending server FIN can be sent once the client has accepted
     /// all injected data; a client FIN is ACKed so its stack completes the close.
+    ///
+    /// Parallel-establishment behavior: while the SOCKS5 CONNECT is still in
+    /// flight (<see cref="FlowState.UpstreamReady"/> == false) client payload is
+    /// buffered in the flow's bounded pending buffer instead of being dropped,
+    /// so the client's first request is relayed the moment the upstream is
+    /// ready (never re-transmitted).
     /// </summary>
     internal async Task HandleExistingFlowAsync(
         FlowState flow, byte[] buffer, uint readLen, TcpTuple tuple, CancellationToken ct)
     {
-        if (flow.Status != FlowStatus.Established || flow.UpstreamStream == null)
+        if (flow.Status == FlowStatus.Closed)
         {
-            // Not yet established or already closed — nothing to relay.
+            // Already cleaned up — nothing to do.
             return;
         }
 
+        // ── Parallel-establishment path: buffer client payload until the
+        //    SOCKS5 CONNECT completes. The flow may be Connecting (CONNECT in
+        //    flight) or Established (CONNECT done). While Connecting, all
+        //    payload is buffered; pure ACK seq is still recorded so the
+        //    deferred FIN works; FIN is handled normally (the close proceeds
+        //    even if the CONNECT hasn't completed yet). ──
         var payloadLen = TcpPacketParser.GetPayloadLength(buffer, readLen, tuple);
         if (payloadLen <= 0)
         {
@@ -677,13 +813,52 @@ internal sealed class TcpFerry : IDisposable
             return;
         }
 
-        var tcpOffset = (buffer[0] & 0x0F) * 4;
-        var payload = buffer.AsMemory(tcpOffset + tuple.TcpHeaderLen, payloadLen);
+        // ── Client has payload. If the upstream is not ready yet, buffer it
+        //    (bounded, non-blocking). The per-flow consumer guarantees same-flow
+        //    ordering, so the CONNECT establish-action will drain the buffer
+        //    before capturing any new payload. ──
+        if (!flow.UpstreamReady)
+        {
+            var tcpOffset = (buffer[0] & 0x0F) * 4;
+            var payload = buffer.AsSpan(tcpOffset + tuple.TcpHeaderLen, payloadLen);
+
+            if (flow.TryAppendPendingBuffer(payload))
+            {
+                // Count the bytes toward ClientBytesSent so the ACK framing is
+                // correct — the client's ACK sequence is ClientIsn + 1 + ClientBytesSent.
+                // The flushed bytes also count; the client's view of what was sent
+                // is monotonic even though the upstream write is deferred.
+                flow.ClientBytesSent += payloadLen;
+                flow.Touch();
+                Trace($"Buffered {payloadLen} client bytes (pending={flow.PendingBufferLength})");
+                InjectAckToClient(flow, tuple);
+            }
+            else
+            {
+                // Buffer overflow — drop the payload; the client will retransmit.
+                // The upstream CONNECT will drain the buffer when it completes,
+                // and the client's retransmit will then be accepted.
+                Trace($"Pending buffer overflow — dropping {payloadLen} bytes (client will retransmit)");
+                InjectAckToClient(flow, tuple);
+            }
+            return;
+        }
+
+        // ── Upstream is ready and Established — normal relay path. ──
+        if (flow.Status != FlowStatus.Established || flow.UpstreamStream == null)
+        {
+            // Should not be reachable, but guard against the race where
+            // UpstreamReady is set but the flow was cleaned up.
+            return;
+        }
+
+        var tcpOffset2 = (buffer[0] & 0x0F) * 4;
+        var payload2 = buffer.AsMemory(tcpOffset2 + tuple.TcpHeaderLen, payloadLen);
 
         try
         {
             Trace($"Relay client→upstream {payloadLen} bytes (total sent={flow.ClientBytesSent + payloadLen})");
-            await flow.UpstreamStream.WriteAsync(payload, ct);
+            await flow.UpstreamStream.WriteAsync(payload2, ct);
             flow.ClientBytesSent += payloadLen;
             flow.Touch();
         }

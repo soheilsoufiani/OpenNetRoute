@@ -57,11 +57,10 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
             new ProcessTable(),
             settings.Rules,
             captureFilter: "outbound and ip and tcp and not loopback",
-            // The 600ms default adds that delay to EVERY new connection before
-            // the SYN-ACK is injected — a browser opening many concurrent
-            // connections pays it per connection, dominating perceived latency.
-            // Pin the browser-friendly 100ms value (validated by the elevated
-            // E2E tests) explicitly so the app path never regresses to 600ms.
+            // DefaultHoldMs is 0: the crafted SYN-ACK is injected immediately on
+            // SYN capture and the SOCKS5 CONNECT runs in parallel, so the hold
+            // mechanism is gone. The parameter is retained for source
+            // compatibility but has no effect.
             holdTimeoutMs: TcpFerry.DefaultHoldMs,
             trace: _trace);
 

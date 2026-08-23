@@ -26,13 +26,18 @@ public class TcpFerryDataRelayTests
             AuthenticationType = ProxyAuthenticationType.None, Enabled = true
         }));
 
-    /// <summary>Creates a flow in Established state with a MemoryStream as the upstream.</summary>
-    private static (FlowState Flow, MemoryStream Upstream) MakeEstablishedFlow(byte[]? synPacket = null)
+    /// <summary>
+    /// Creates a flow in Established state with a MemoryStream as the upstream.
+    /// Both <see cref="FlowState.Status"/> and <see cref="FlowState.UpstreamReady"/>
+    /// are set, matching the post-CONNECT state the ferry produces.
+    /// </summary>
+    private static (FlowState Flow, MemoryStream Upstream) MakeEstablishedFlow()
     {
         var key = FlowTable.KeyFrom(ClientIp, ClientPort, ServerIp, ServerPort);
         var flow = new FlowState(key, 1000, TcpFerry.DefaultServerIsn, default)
         {
-            Status = FlowStatus.Established
+            Status = FlowStatus.Established,
+            UpstreamReady = true
         };
         var upstream = new MemoryStream();
         flow.UpstreamStream = upstream;
@@ -85,26 +90,78 @@ public class TcpFerryDataRelayTests
     }
 
     [Fact]
-    public async Task Relay_NotEstablished_DoesNothing()
+    public async Task Relay_NotReady_BuffersPayloadUntilUpstreamReady()
     {
+        // Parallel establishment: the client's payload arrives while the
+        // SOCKS5 CONNECT is still in flight (UpstreamReady == false). The
+        // ferry must BUFFER the payload (bounded) instead of dropping it, and
+        // count it toward ClientBytesSent so the client's ACK framing stays
+        // correct. The upstream write happens only when the CONNECT completes.
         var ferry = MakeFerry();
         var key = FlowTable.KeyFrom(ClientIp, ClientPort, ServerIp, ServerPort);
         var flow = new FlowState(key, 1000, TcpFerry.DefaultServerIsn, default)
         {
-            Status = FlowStatus.Connecting // not yet established
+            Status = FlowStatus.Connecting, // CONNECT still in flight
+            UpstreamReady = false
         };
         var upstream = new MemoryStream();
         flow.UpstreamStream = upstream;
 
-        var payload = "data"u8.ToArray();
+        var payload = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"u8.ToArray();
         var packet = TcpPacketBuilder.BuildDataPacket(
             ClientIp, ServerIp, ClientPort, ServerPort, 1001, 2000, payload);
 
         Assert.True(TcpPacketParser.TryParse(packet, (uint)packet.Length, out var tuple));
         await ferry.HandleExistingFlowAsync(flow, packet, (uint)packet.Length, tuple, CancellationToken.None);
 
-        Assert.Equal(0, flow.ClientBytesSent);
-        Assert.Equal(0, upstream.Length);
+        // Buffered, not dropped; counted toward ClientBytesSent.
+        Assert.Equal(payload.Length, flow.PendingBufferLength);
+        Assert.Equal(payload.Length, flow.ClientBytesSent);
+        Assert.Equal(0, upstream.Length); // nothing written yet
+
+        // Now the CONNECT completes: draining + writing the buffered bytes is
+        // the ferry's job (ApplyUpstreamEstablishedAsync); here we verify the
+        // buffer holds exactly the client payload, ready for that drain.
+        var drained = flow.DrainPendingBuffer();
+        Assert.Equal(payload, drained);
+        Assert.Equal(0, flow.PendingBufferLength);
+    }
+
+    [Fact]
+    public async Task Relay_BufferOverflow_DropsExcess_DoesNotBlock()
+    {
+        // The pending buffer is bounded (64 KB). Payload beyond the bound is
+        // dropped (the client will retransmit) — the capture loop must never
+        // block on buffering.
+        var ferry = MakeFerry();
+        var key = FlowTable.KeyFrom(ClientIp, ClientPort, ServerIp, ServerPort);
+        var flow = new FlowState(key, 1000, TcpFerry.DefaultServerIsn, default)
+        {
+            Status = FlowStatus.Connecting,
+            UpstreamReady = false
+        };
+        var upstream = new MemoryStream();
+        flow.UpstreamStream = upstream;
+
+        // First payload: fills the buffer (64 KB).
+        var big = new byte[FlowState.MaxPendingBufferSize];
+        Array.Fill(big, (byte)'A');
+        var packet1 = TcpPacketBuilder.BuildDataPacket(
+            ClientIp, ServerIp, ClientPort, ServerPort, 1001, 2000, big);
+        Assert.True(TcpPacketParser.TryParse(packet1, (uint)packet1.Length, out var tuple1));
+        await ferry.HandleExistingFlowAsync(flow, packet1, (uint)packet1.Length, tuple1, CancellationToken.None);
+        Assert.Equal(FlowState.MaxPendingBufferSize, flow.PendingBufferLength);
+
+        // Second payload: exceeds the bound → dropped, but the client is still
+        // ACKed so its stack does not stall.
+        var extra = "overflow"u8.ToArray();
+        var packet2 = TcpPacketBuilder.BuildDataPacket(
+            ClientIp, ServerIp, ClientPort, ServerPort, (uint)(1001 + big.Length), 2000, extra);
+        Assert.True(TcpPacketParser.TryParse(packet2, (uint)packet2.Length, out var tuple2));
+        await ferry.HandleExistingFlowAsync(flow, packet2, (uint)packet2.Length, tuple2, CancellationToken.None);
+
+        Assert.Equal(FlowState.MaxPendingBufferSize, flow.PendingBufferLength); // unchanged
+        Assert.Equal(FlowState.MaxPendingBufferSize, flow.ClientBytesSent); // dropped bytes not counted
     }
 
     /// <summary>Builds a client FIN packet (flags=0x11) with the given ack.</summary>
