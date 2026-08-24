@@ -130,6 +130,57 @@ public class TcpFerryEndToEndTests
     }
 
     /// <summary>
+    /// An HTTP backend that accepts MULTIPLE connections and holds each open
+    /// (no response) until the shared <see cref="TaskCompletionSource"/> is
+    /// completed. Used by the mid-flow-stop test: the held connection keeps the
+    /// ferry's flow alive and observable, while the restarted ferry's fresh
+    /// connection is still served by a later accept.
+    /// </summary>
+    private static async Task<int> StartHoldingBackendMultiAsync(TaskCompletionSource release)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (true)
+                {
+                    var client = await listener.AcceptTcpClientAsync();
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            using (client)
+                            using (var stream = client.GetStream())
+                            {
+                                var buf = new byte[4096];
+                                var total = 0;
+                                while (total < buf.Length)
+                                {
+                                    var r = await stream.ReadAsync(buf.AsMemory(total, buf.Length - total));
+                                    if (r <= 0) break;
+                                    total += r;
+                                    if (buf.AsSpan(0, total).IndexOf("\r\n\r\n"u8) >= 0) break;
+                                }
+                                await release.Task.WaitAsync(TimeSpan.FromSeconds(15));
+                                var resp = Encoding.ASCII.GetBytes(
+                                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
+                                await stream.WriteAsync(resp, 0, resp.Length);
+                            }
+                        }
+                        catch { }
+                    });
+                }
+            }
+            catch { }
+        });
+        return port;
+    }
+
+    /// <summary>
     /// An HTTP backend that sends a 4 KB response body in multiple chunks,
     /// exercising the ferry's multi-segment data relay. The response declares
     /// Content-Length: 4096 so the client (curl) knows to read the full body.
@@ -715,12 +766,19 @@ public class TcpFerryEndToEndTests
         // Core-reliability gap 2 (shutdown): start the ferry, open a proxied
         // connection, then STOP the ferry mid-flow. Assert no leftover flows,
         // no exceptions, and the ferry can be restarted (new connection works).
+        //
+        // The backend HOLDS the connection open (no response until released):
+        // with parallel establishment the whole lifecycle (SYN → CONNECT →
+        // response → FIN → cleanup) completes in ~10-30ms, so a fast backend
+        // would let the flow come and go before the test's flow-count poll
+        // observes it. Holding keeps the flow alive and observable.
         if (!IsElevated())
         {
             return;
         }
 
-        var backendPort = await StartHttpBackendAsync();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var backendPort = await StartHoldingBackendMultiAsync(release);
 
         using var proxy = new Socks5TestServer(async (request, stream, ct) =>
         {
@@ -765,6 +823,9 @@ public class TcpFerryEndToEndTests
             ferry.Start();
 
             // Open a connection (curl) and let it establish through the ferry.
+            // The backend holds the response, so the flow stays alive in the
+            // table until we release it — this is what makes the mid-flow stop
+            // meaningful.
             var psi = new ProcessStartInfo
             {
                 FileName = "curl.exe",
@@ -784,9 +845,16 @@ public class TcpFerryEndToEndTests
             Assert.True(ferry.Flows.Count > 0, "expected at least one flow while curl connects");
 
             // Stop the ferry mid-flow. Must not throw and must clean up flows.
+            // (The stopped ferry's upstream legs to the holding backend are
+            // closed; the backend handler tolerates the abrupt close.)
             await ferry.StopAsync();
             Assert.Equal(0, ferry.Flows.Count);
             Assert.False(ferry.IsRunning);
+
+            // Release the held backend so the first curl's connection is torn
+            // down cleanly (it was killed by the ferry stop; the release lets
+            // the backend handler exit without blocking for 15s).
+            release.TrySetResult();
 
             // Restart the ferry — a fresh connection must still work (no
             // leftover handle / no state corruption).
@@ -814,6 +882,7 @@ public class TcpFerryEndToEndTests
         }
         finally
         {
+            release.TrySetResult(); // ensure the backend releases on any failure
             await ferry.StopAsync();
             ferry.Dispose();
         }
