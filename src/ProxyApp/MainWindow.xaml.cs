@@ -450,6 +450,32 @@ public partial class MainWindow : Window
 
     // ── Debug / Log panel ──
 
+    private DebugWindow? _debugWindow;
+
+    /// <summary>
+    /// Opens the Debug window (separate, non-modal) and routes the engine's
+    /// trace + per-connection sinks into it. The window keeps working while
+    /// the ferry runs; the sinks are non-blocking (bounded ring buffer).
+    /// </summary>
+    private void OnDebugClicked(object sender, RoutedEventArgs e)
+    {
+        if (_debugWindow != null && _debugWindow.IsVisible)
+        {
+            _debugWindow.Activate();
+            return;
+        }
+
+        _debugWindow = new DebugWindow();
+        _debugWindow.Closed += (_, _) => _debugWindow = null;
+
+        // Route BOTH the trace sink and the per-connection summary sink.
+        _engine.SetTrace(_debugWindow.Append);
+        _engine.SetFlowClosed(_debugWindow.Append);
+        _debugWindow.Append($"[INFO] {DateTime.Now:HH:mm:ss.fff} Debug window opened — trace + flow summary wired.");
+
+        _debugWindow.Show();
+    }
+
     private void OnCopyLogClicked(object sender, RoutedEventArgs e)
     {
         _logPanel.CopyToClipboard();

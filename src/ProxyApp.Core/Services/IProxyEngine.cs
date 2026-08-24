@@ -32,4 +32,11 @@ public interface IProxyEngine : IDisposable
     /// to a bounded ring buffer) — never do UI work or I/O inline.
     /// </summary>
     void SetTrace(Action<string>? trace);
+
+    /// <summary>
+    /// Sets the per-connection summary sink ([FLOW]/[CLOSE] lines: flow key,
+    /// process, close reason, bytes each way). Same threading and non-blocking
+    /// contract as <see cref="SetTrace"/>.
+    /// </summary>
+    void SetFlowClosed(Action<string>? flowClosed);
 }

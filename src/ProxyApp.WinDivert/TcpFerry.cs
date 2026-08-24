@@ -42,11 +42,34 @@ internal sealed class TcpFerry : IDisposable
     private readonly IReadOnlyList<ApplicationRule> _rules;
     private readonly ISocks5Client _socks5Client;
     private readonly Action<string>? _trace;
+    private readonly Action<string>? _flowClosed; // per-connection summary sink
     private IntPtr _captureHandle = IntPtr.Zero;
     private CancellationTokenSource? _cts;
     private Task? _captureLoop;
     private readonly FlowTable _flowTable = new();
     private volatile bool _isRunning;
+
+    // ── Health counters (Interlocked; read by the periodic stats ticker) ──
+    private long _synsCaptured;
+    private long _synAcksInjected;
+    private long _rstsInjected;
+    private long _windivertErrors;
+    private long _connectFailures;
+
+    /// <summary>Total pure SYNs attributed to a proxied rule.</summary>
+    internal long SynsCaptured => Interlocked.Read(ref _synsCaptured);
+
+    /// <summary>Total crafted SYN-ACKs injected.</summary>
+    internal long SynAcksInjected => Interlocked.Read(ref _synAcksInjected);
+
+    /// <summary>Total RSTs injected (CONNECT failure / upstream error).</summary>
+    internal long RstsInjected => Interlocked.Read(ref _rstsInjected);
+
+    /// <summary>Total WinDivertSend/Recv failures observed.</summary>
+    internal long WinDivertErrors => Interlocked.Read(ref _windivertErrors);
+
+    /// <summary>Total SOCKS5 CONNECT failures.</summary>
+    internal long ConnectFailures => Interlocked.Read(ref _connectFailures);
 
     /// <summary>Emits a diagnostic trace line (defaults to a no-op).</summary>
     private void Trace(string message) => _trace?.Invoke($"[TcpFerry] {message}");
@@ -65,6 +88,7 @@ internal sealed class TcpFerry : IDisposable
     /// Idle timeout for proxied flows (default: 2 minutes).
     /// </param>
     /// <param name="trace">Optional diagnostic trace sink.</param>
+    /// <param name="flowClosed">Optional per-connection close summary sink.</param>
     public TcpFerry(
         ISocks5Client socks5Client,
         IConnectionProcessResolver? processResolver = null,
@@ -72,7 +96,8 @@ internal sealed class TcpFerry : IDisposable
         string? captureFilter = null,
         int holdTimeoutMs = DefaultHoldMs,
         TimeSpan? idleTimeout = null,
-        Action<string>? trace = null)
+        Action<string>? trace = null,
+        Action<string>? flowClosed = null)
     {
         _socks5Client = socks5Client ?? throw new ArgumentNullException(nameof(socks5Client));
         _processResolver = processResolver ?? new DefaultPassThroughResolver();
@@ -80,6 +105,7 @@ internal sealed class TcpFerry : IDisposable
         _captureFilter = captureFilter ?? "outbound and ip and tcp and not loopback";
         _idleTimeout = idleTimeout ?? DefaultIdleTimeout;
         _trace = trace;
+        _flowClosed = flowClosed;
 
         // The SYN-ACK is injected IMMEDIATELY on SYN capture; the SOCKS5 CONNECT
         // runs in parallel. The old serial hold (600ms → 100ms) added the full
@@ -127,6 +153,32 @@ internal sealed class TcpFerry : IDisposable
 
         _isRunning = true;
         _captureLoop = Task.Run(() => CaptureLoopAsync(ct), ct);
+        StartHealthTicker(ct);
+    }
+
+    /// <summary>
+    /// Periodic health-stats ticker (every 5s): active flows, SYN captured,
+    /// SYN-ACK injected, RST injected, CONNECT failures, WinDivert errors.
+    /// Fire-and-forget; cheap Interlocked reads; lets the debug panel show
+    /// whether the capture path is keeping up under browser load.
+    /// </summary>
+    private void StartHealthTicker(CancellationToken ct)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                    Trace($"STATS: flows={_flowTable.Count} " +
+                          $"syns={SynsCaptured} synacks={SynAcksInjected} " +
+                          $"rsts={RstsInjected} connectFails={ConnectFailures} " +
+                          $"winDivertErrors={WinDivertErrors}");
+                }
+            }
+            catch (OperationCanceledException) { }
+        }, ct);
     }
 
     /// <summary>
@@ -313,6 +365,8 @@ internal sealed class TcpFerry : IDisposable
             return;
         }
 
+        Interlocked.Increment(ref _synsCaptured);
+
         // ── Start the per-flow consumer NOW (not at pump start). The capture
         //    loop enqueues client packets while the flow is still Connecting;
         //    the consumer drains them serially, which the buffering path in
@@ -340,12 +394,16 @@ internal sealed class TcpFerry : IDisposable
         {
             // Injection failed; remove the flow.
             InjectRstToClient(tuple, flow);
-            CleanupFlow(flowKey, flow);
+            CleanupFlow(flowKey, flow, "synack-inject-failed");
             return;
         }
+        Interlocked.Increment(ref _synAcksInjected);
         Trace($"SYN-ACK injected in {stopwatch.ElapsedMilliseconds}ms");
 
         flow.Touch();
+        _flowClosed?.Invoke(
+            $"[FLOW] {flowKey} created process={processName ?? "?"} pid={processInfo?.ProcessId ?? 0} " +
+            $"dst={tuple.DstIp}:{tuple.DstPort}");
 
         // ── Establish the SOCKS5 upstream IN PARALLEL. The handshake has
         //    already completed, so the CONNECT time is hidden from the client.
@@ -379,11 +437,12 @@ internal sealed class TcpFerry : IDisposable
             // The RST+cleanup is enqueued (serialized with packet processing);
             // if the flow was already cleaned up (channel completed), the
             // enqueue fails and the cleanup already happened.
+            Interlocked.Increment(ref _connectFailures);
             Trace($"SOCKS5 upstream failed — injecting RST to client.");
             flow.EnqueueProcessing(() =>
             {
                 InjectRstToClient(tuple, flow);
-                CleanupFlow(flowKey, flow);
+                CleanupFlow(flowKey, flow, "connect-failed");
                 return Task.CompletedTask;
             });
             return;
@@ -461,7 +520,7 @@ internal sealed class TcpFerry : IDisposable
             {
                 Trace($"Buffered flush failed for {flow.Key}: {ex.Message}");
                 InjectRstToClient(tuple, flow);
-                CleanupFlow(flow.Key, flow);
+                CleanupFlow(flow.Key, flow, "flush-failed");
                 upstream.Dispose();
                 return;
             }
@@ -502,7 +561,7 @@ internal sealed class TcpFerry : IDisposable
                 _flowTable.Contains(flow.Key))
             {
                 Trace($"Pump exited without client FIN — cleaning up {flow.Key}");
-                CleanupFlow(flow.Key, flow);
+                CleanupFlow(flow.Key, flow, "pump-exit-no-fin");
             }
         }, TaskScheduler.Default);
     }
@@ -595,6 +654,7 @@ internal sealed class TcpFerry : IDisposable
                 if (!WinDivertNative.WinDivertSend(
                         _captureHandle, packet, (uint)packet.Length, IntPtr.Zero, ref addr))
                 {
+                    Interlocked.Increment(ref _windivertErrors);
                     Trace($"WinDivertSend FAILED err={Marshal.GetLastWin32Error()}");
                     break;
                 }
@@ -624,7 +684,7 @@ internal sealed class TcpFerry : IDisposable
                     // no silent hang, no leaked flow.
                     Trace($"Upstream error — injecting RST to client for {flow.Key}");
                     InjectRstToClient(clientSynTuple, flow);
-                    CleanupFlow(flow.Key, flow);
+                    CleanupFlow(flow.Key, flow, "upstream-error");
                 }
                 else if (upstreamEof)
                 {
@@ -693,6 +753,7 @@ internal sealed class TcpFerry : IDisposable
             // error 6 after the client has sent its own FIN. The failure is
             // logged, not swallowed — the client will time out and give up if
             // the FIN never arrives.
+            Interlocked.Increment(ref _windivertErrors);
             Trace($"FIN WinDivertSend FAILED err={Marshal.GetLastWin32Error()}");
         }
     }
@@ -749,7 +810,10 @@ internal sealed class TcpFerry : IDisposable
         var addr = flow.SynAddress;
         addr.LayerEventFlags &= ~(1uL << 17); // inbound
         WinDivertNative.WinDivertHelperCalcChecksums(rst, (uint)rst.Length, ref addr, 0);
-        WinDivertNative.WinDivertSend(_captureHandle, rst, (uint)rst.Length, IntPtr.Zero, ref addr);
+        if (WinDivertNative.WinDivertSend(_captureHandle, rst, (uint)rst.Length, IntPtr.Zero, ref addr))
+            Interlocked.Increment(ref _rstsInjected);
+        else
+            Interlocked.Increment(ref _windivertErrors);
     }
 
     /// <summary>
@@ -765,10 +829,16 @@ internal sealed class TcpFerry : IDisposable
     /// closed normally — on a browser this kills connections that still had
     /// requests in flight.
     /// </summary>
-    private void CleanupFlow(FlowKey key, FlowState flow)
+    private void CleanupFlow(FlowKey key, FlowState flow, string reason = "cleanup")
     {
         if (_flowTable.TryRemove(key, out _))
         {
+            // Per-connection diagnostic summary.
+            _flowClosed?.Invoke(
+                $"[CLOSE] {key} reason={reason} " +
+                $"sent={flow.ClientBytesSent} recv={flow.ClientBytesRecv} " +
+                $"process={flow.ProcessName ?? "?"} pid={flow.ProcessId}");
+
             // Mark closed BEFORE disposing so concurrent readers (the upstream
             // pump's finally, HandleExistingFlowAsync) never act on a
             // half-torn-down flow.
@@ -829,7 +899,7 @@ internal sealed class TcpFerry : IDisposable
                 // completed connection left a Closing-state flow behind,
                 // accumulating indefinitely — caught by the
                 // SustainedTraffic_NoPacketLoop elevated test).
-                CleanupFlow(flow.Key, flow);
+                CleanupFlow(flow.Key, flow, "client-fin");
                 return;
             }
 
@@ -906,7 +976,7 @@ internal sealed class TcpFerry : IDisposable
             // Upstream write failed — the flow is broken; fail the client and clean up.
             Debug.WriteLine($"[TcpFerry] Upstream write failed for {flow.Key}: {ex.Message}");
             InjectRstToClient(tuple, flow);
-            CleanupFlow(flow.Key, flow);
+            CleanupFlow(flow.Key, flow, "upstream-write-failed");
             return;
         }
 
@@ -935,6 +1005,7 @@ internal sealed class TcpFerry : IDisposable
         if (!WinDivertNative.WinDivertSend(
                 _captureHandle, ack, (uint)ack.Length, IntPtr.Zero, ref addr))
         {
+            Interlocked.Increment(ref _windivertErrors);
             Trace($"ACK WinDivertSend FAILED err={Marshal.GetLastWin32Error()}");
         }
     }

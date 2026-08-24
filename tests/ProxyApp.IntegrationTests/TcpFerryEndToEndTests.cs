@@ -1115,6 +1115,114 @@ public class TcpFerryEndToEndTests
         }
     }
 
+    [Fact]
+    public async Task ConcurrentCurls_20_ThroughFerry_AllComplete()
+    {
+        // Stress test for the concurrent-flow hypothesis: a browser opens 20+
+        // connections in a burst (fonts, scripts, CSS). Every SYN must get its
+        // own flow + CONNECT, and all 20 responses must complete — the capture
+        // loop must not block on per-flow I/O and the flow table must not drop
+        // SYNs under load.
+        if (!IsElevated())
+        {
+            return;
+        }
+
+        var backendPort = await StartHttpBackendAsync();
+
+        using var proxy = new Socks5TestServer(async (request, stream, ct) =>
+        {
+            using var upstream = new TcpClient();
+            await upstream.ConnectAsync(IPAddress.Loopback, backendPort, ct);
+            using var upstreamStream = upstream.GetStream();
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, new byte[] { 0, 0, 0, 0 }, 0, ct);
+            var toBackend = RelayOneWayAsync("client→backend", stream, upstreamStream, ct);
+            var toClient = RelayOneWayAsync("backend→client", upstreamStream, stream, ct);
+            await Task.WhenAll(toBackend, toClient);
+        });
+
+        var windivertDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TunnelX");
+        if (!File.Exists(Path.Combine(windivertDir, "WinDivert.dll")))
+        {
+            Assert.Fail($"WinDivert.dll not found at {windivertDir}; cannot run the end-to-end ferry test.");
+        }
+        Environment.SetEnvironmentVariable("PROXYAPP_WINDIVERT_DIR", windivertDir);
+
+        var rules = new List<ApplicationRule>
+        {
+            new() { ExecutableName = "curl.exe", Enabled = true, Mode = ProxyMode.Proxy }
+        };
+
+        WinDivertLibrary.EnsureRegistered();
+
+        var ferry = new TcpFerry(
+            new Socks5Client(new ProxyConfiguration
+            {
+                Host = "127.0.0.1", Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+            }),
+            new ProcessTable(),
+            rules,
+            captureFilter: "outbound and ip and tcp and not loopback",
+            holdTimeoutMs: 100,
+            trace: m => Console.WriteLine(m));
+
+        try
+        {
+            ferry.Start();
+
+            // 20 concurrent curls, all to the same backend via the ferry.
+            const int count = 20;
+            var curls = new List<(Process Proc, Task Exit)>();
+            for (var i = 0; i < count; i++)
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "curl.exe",
+                    Arguments = "-s -o NUL --max-time 10 http://8.8.8.8/",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false
+                };
+                var proc = Process.Start(psi)!;
+                curls.Add((proc, proc.WaitForExitAsync()));
+            }
+
+            var allDone = Task.WhenAll(curls.Select(c => c.Exit).ToArray());
+            var timeout = Task.Delay(TimeSpan.FromSeconds(20));
+            var completed = await Task.WhenAny(allDone, timeout);
+            if (completed != allDone)
+            {
+                foreach (var (proc, _) in curls)
+                {
+                    try { proc.Kill(); } catch { }
+                }
+                await allDone;
+                Assert.Fail($"{count} concurrent curls did not all finish within 20s (ferry dropped or stalled connections under load).");
+            }
+
+            foreach (var (proc, exitTask) in curls)
+            {
+                await exitTask;
+                Assert.True(proc.ExitCode == 0,
+                    $"curl (pid {proc.Id}) exited {proc.ExitCode} — the response did not arrive through the ferry.");
+            }
+
+            // All flows must have been cleaned up (no leak under load).
+            var cleanupDeadline = DateTime.UtcNow.AddSeconds(8);
+            while (ferry.Flows.Count > 0 && DateTime.UtcNow < cleanupDeadline)
+                await Task.Delay(100);
+            Assert.Equal(0, ferry.Flows.Count);
+        }
+        finally
+        {
+            await ferry.StopAsync();
+            ferry.Dispose();
+        }
+    }
+
     private static async Task RelayOneWayAsync(string dir, NetworkStream a, NetworkStream b, CancellationToken ct)
     {
         var buffer = new byte[4096];

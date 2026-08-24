@@ -165,6 +165,8 @@
                    Text="Status: Stopped" Foreground="Gray"/>
 
         <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="DebugButton" Content="Debug" Padding="16,4" Margin="0,0,8,0"
+                    Click="OnDebugClicked"/>
             <Button x:Name="StartButton" Content="START" Padding="16,4" Margin="0,0,8,0"
                     IsDefault="True" Click="OnStartClicked"/>
             <Button x:Name="StopButton" Content="STOP" Padding="16,4" IsEnabled="False"
