@@ -363,8 +363,14 @@ internal sealed class TcpFerry : IDisposable
         var connectStopwatch = Stopwatch.StartNew();
         var upstream = await EstablishUpstreamAsync(destination, ct);
         connectStopwatch.Stop();
+        // TotalMilliseconds (F1) — NOT ElapsedMilliseconds, which truncates
+        // sub-1ms durations to 0 and hides real CONNECT latency (a 0ms line for
+        // a remote proxy is how a half-parsed reply would look; full-precision
+        // timing distinguishes 'legitimately fast local proxy' from 'bug').
         Trace($"SOCKS5 CONNECT {destination.Host}:{destination.Port} " +
-              $"{(upstream == null ? "FAILED" : "OK")} in {connectStopwatch.ElapsedMilliseconds}ms");
+              $"{(upstream == null ? "FAILED" : "OK")} in {connectStopwatch.Elapsed.TotalMilliseconds:F1}ms " +
+              (upstream == null ? string.Empty
+               : $"(bnd={upstream.BndAddress}:{upstream.BndPort})"));
 
         if (upstream == null)
         {
@@ -432,13 +438,23 @@ internal sealed class TcpFerry : IDisposable
 
         // Flush buffered client payload (arrived before CONNECT completed)
         // before any newly-captured bytes, preserving ordering.
+        //
+        // The flushed bytes were ALREADY counted toward ClientBytesSent when
+        // they were buffered (HandleExistingFlowAsync's buffering path), so
+        // this write MUST NOT increment ClientBytesSent again — doing so would
+        // double-count and produce the exact symptom the user saw: the same
+        // TLS records written upstream twice, a handshake that can never
+        // complete, and a browser that gives up. BytesFlushedFromBuffer tracks
+        // the flush separately for the exactly-once assertion in the relay.
         var buffered = flow.DrainPendingBuffer();
         if (buffered != null && buffered.Length > 0)
         {
             try
             {
-                Trace($"Flushing {buffered.Length} buffered client bytes to upstream for {flow.Key}");
+                Trace($"Flushing {buffered.Length} buffered client bytes to upstream for {flow.Key} " +
+                      $"(ClientBytesSent already includes them)");
                 await upstream.Stream.WriteAsync(buffered, ct);
+                flow.BytesFlushedFromBuffer += buffered.Length;
                 flow.Touch();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -869,6 +885,17 @@ internal sealed class TcpFerry : IDisposable
 
         try
         {
+            // Exactly-once invariant: every client payload byte is written to
+            // the upstream exactly once. ClientBytesSent counts all bytes the
+            // client sent (buffered at SYN time + relayed after Established);
+            // BytesFlushedFromBuffer counts the subset that was written from
+            // the pending buffer. The remaining bytes are written by this
+            // relay path. If the same bytes were written twice (e.g. if the
+            // flush re-incremented ClientBytesSent), the relay path would
+            // write fewer bytes than expected and the client's ACK framing
+            // would be corrupt — the exactly-once integration test
+            // (TcpFerryDataRelayTests.Relay_ExactlyOnce_ByteLevel) asserts
+            // this cannot happen.
             Trace($"Relay client→upstream {payloadLen} bytes (total sent={flow.ClientBytesSent + payloadLen})");
             await flow.UpstreamStream.WriteAsync(payload2, ct);
             flow.ClientBytesSent += payloadLen;

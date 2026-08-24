@@ -233,4 +233,56 @@ public class TcpFerryDataRelayTests
         Assert.Equal(10, flow.ClientBytesSent);
         Assert.Equal(payload1.Concat(payload2).ToArray(), upstream.ToArray());
     }
+
+    [Fact]
+    public async Task Relay_ExactlyOnce_ByteLevel_BufferedThenFlushedThenRelayed()
+    {
+        // THE double-write regression test: the flush of the pending buffer
+        // must NOT re-increment ClientBytesSent (the buffered bytes were
+        // already counted at buffer time), and the relay must write each
+        // client byte EXACTLY ONCE. A duplicate write corrupts TLS records and
+        // breaks the handshake — the symptom the user saw on real sites.
+        var ferry = MakeFerry();
+        var key = FlowTable.KeyFrom(ClientIp, ClientPort, ServerIp, ServerPort);
+        var flow = new FlowState(key, 1000, TcpFerry.DefaultServerIsn, default)
+        {
+            Status = FlowStatus.Connecting,
+            UpstreamReady = false
+        };
+        var upstream = new MemoryStream();
+        flow.UpstreamStream = upstream;
+
+        // Phase 1 — client payload while Connecting: buffered (counted).
+        var tls1 = "ClientHello-536-bytes"u8.ToArray();
+        var p1 = TcpPacketBuilder.BuildDataPacket(
+            ClientIp, ServerIp, ClientPort, ServerPort, 1001, 2000, tls1);
+        Assert.True(TcpPacketParser.TryParse(p1, (uint)p1.Length, out var t1));
+        await ferry.HandleExistingFlowAsync(flow, p1, (uint)p1.Length, t1, CancellationToken.None);
+        Assert.Equal(tls1.Length, flow.PendingBufferLength);
+        Assert.Equal(tls1.Length, flow.ClientBytesSent); // counted at buffer time
+        Assert.Equal(0, upstream.Length); // NOT written yet
+
+        // Phase 2 — CONNECT completes: flush writes the buffered bytes exactly
+        // once and records them in BytesFlushedFromBuffer (NOT ClientBytesSent).
+        var buffered = flow.DrainPendingBuffer();
+        Assert.Equal(tls1, buffered);
+        await upstream.WriteAsync(buffered!);
+        flow.BytesFlushedFromBuffer += buffered.Length;
+        flow.UpstreamStream = upstream;
+        flow.Status = FlowStatus.Established;
+        flow.UpstreamReady = true;
+        Assert.Equal(tls1.Length, flow.BytesFlushedFromBuffer);
+        Assert.Equal(tls1.Length, flow.ClientBytesSent); // unchanged by flush
+        Assert.Equal(tls1, upstream.ToArray()); // written exactly once
+
+        // Phase 3 — more client payload after Established: relayed (counted).
+        var tls2 = "ServerHello-response-continues"u8.ToArray();
+        var p2 = TcpPacketBuilder.BuildDataPacket(
+            ClientIp, ServerIp, ClientPort, ServerPort, (uint)(1001 + tls1.Length), 2000, tls2);
+        Assert.True(TcpPacketParser.TryParse(p2, (uint)p2.Length, out var t2));
+        await ferry.HandleExistingFlowAsync(flow, p2, (uint)p2.Length, t2, CancellationToken.None);
+        Assert.Equal(tls1.Length + tls2.Length, flow.ClientBytesSent);
+        Assert.Equal(tls1.Length, flow.BytesFlushedFromBuffer); // unchanged by relay
+        Assert.Equal(tls1.Concat(tls2).ToArray(), upstream.ToArray()); // exactly once, in order
+    }
 }

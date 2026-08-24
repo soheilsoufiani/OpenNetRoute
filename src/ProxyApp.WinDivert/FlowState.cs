@@ -141,6 +141,25 @@ internal sealed class FlowState
     }
 
     /// <summary>
+    /// Number of payload bytes written to the upstream from the pending buffer
+    /// (the buffered-while-Connecting bytes that the CONNECT-establish action
+    /// flushes). These bytes are ALREADY included in <see cref="ClientBytesSent"/>
+    /// (they were counted when buffered), so the flush must NOT increment
+    /// ClientBytesSent again — this counter tracks the flush separately so the
+    /// exactly-once invariant can be asserted: every client payload byte is
+    /// written upstream exactly once, whether via the buffered flush or the
+    /// normal relay path.
+    /// </summary>
+    private long _bytesFlushedFromBuffer;
+
+    /// <inheritdoc cref="_bytesFlushedFromBuffer"/>
+    public long BytesFlushedFromBuffer
+    {
+        get => Interlocked.Read(ref _bytesFlushedFromBuffer);
+        set => Interlocked.Exchange(ref _bytesFlushedFromBuffer, value);
+    }
+
+    /// <summary>
     /// Current pending-buffer length in bytes (for diagnostics). Thread-safe.
     /// </summary>
     public int PendingBufferLength
