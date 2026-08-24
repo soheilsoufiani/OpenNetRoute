@@ -739,17 +739,29 @@ internal sealed class TcpFerry : IDisposable
     /// <summary>
     /// Removes a flow and disposes its upstream stream (including any CONNECT
     /// that completed but was not yet claimed).
+    ///
+    /// <see cref="FlowState.Status"/> is set to <see cref="FlowStatus.Closed"/>
+    /// FIRST, before the upstream stream is disposed: the upstream read pump's
+    /// pending ReadAsync then throws on the disposed stream, and its error
+    /// path sees Status == Closed and suppresses the spurious RST. Without
+    /// this ordering, a CLEAN close (client FIN → CleanupFlow) racing the
+    /// pump's stream-dispose could inject a RST to a client connection that
+    /// closed normally — on a browser this kills connections that still had
+    /// requests in flight.
     /// </summary>
     private void CleanupFlow(FlowKey key, FlowState flow)
     {
         if (_flowTable.TryRemove(key, out _))
         {
+            // Mark closed BEFORE disposing so concurrent readers (the upstream
+            // pump's finally, HandleExistingFlowAsync) never act on a
+            // half-torn-down flow.
+            flow.Status = FlowStatus.Closed;
             try { flow.UpstreamStream?.Dispose(); } catch { }
             try { flow.TryClaimPendingUpstream()?.Dispose(); } catch { }
             try { flow.LoopCts?.Cancel(); } catch { }
             try { flow.LoopCts?.Dispose(); } catch { }
             flow.CompleteProcessing(); // lets the per-flow consumer exit
-            flow.Status = FlowStatus.Closed;
         }
     }
 
