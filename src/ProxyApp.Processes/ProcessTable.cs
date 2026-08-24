@@ -40,9 +40,11 @@ public sealed class ProcessTable : IConnectionProcessResolver
     /// <summary>
     /// Queries the extended TCP table for the owning PID of the given 4-tuple.
     /// Returns null if the row is not found (not yet visible, or the connection
-    /// does not exist in the table).
+    /// does not exist in the table). Internal so the cached resolver
+    /// (<see cref="CachedProcessTable"/>) can fall back to a direct on-demand
+    /// query when its snapshot misses a fresh connection.
     /// </summary>
-    private static int? FindOwnerPid(
+    internal static int? FindOwnerPid(
         IPAddress localIp, ushort localPort,
         IPAddress remoteIp, ushort remotePort)
     {

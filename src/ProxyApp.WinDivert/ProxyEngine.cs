@@ -19,6 +19,7 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
 {
     private readonly object _traceLock = new();
     private Action<string>? _trace;
+    private Action<string>? _flowClosed;
     private TcpFerry? _ferry;
 
     /// <summary>
@@ -46,6 +47,18 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
         }
     }
 
+    /// <summary>
+    /// Sets the per-connection close-summary sink ([FLOW]/[CLOSE] lines). Same
+    /// threading and non-blocking contract as <see cref="SetTrace"/>.
+    /// </summary>
+    public void SetFlowClosed(Action<string>? flowClosed)
+    {
+        lock (_traceLock)
+        {
+            _flowClosed = flowClosed;
+        }
+    }
+
     /// <inheritdoc />
     public bool IsRunning => _ferry?.IsRunning ?? false;
 
@@ -70,7 +83,11 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
 
         var ferry = new TcpFerry(
             new Socks5Client(settings.Proxy),
-            new ProcessTable(),
+            // CachedProcessTable: a browser opens 30+ concurrent connections in
+            // a burst; the uncached ProcessTable walks the ENTIRE OS connection
+            // table per SYN (~3ms each), serializing the SYN handlers. The
+            // cached resolver reuses one snapshot per 50ms window.
+            new CachedProcessTable(),
             settings.Rules,
             captureFilter: "outbound and ip and tcp and not loopback",
             // DefaultHoldMs is 0: the crafted SYN-ACK is injected immediately on
@@ -78,7 +95,8 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
             // mechanism is gone. The parameter is retained for source
             // compatibility but has no effect.
             holdTimeoutMs: TcpFerry.DefaultHoldMs,
-            trace: _trace);
+            trace: _trace,
+            flowClosed: _flowClosed);
 
         // Throws InvalidOperationException with the WinDivert error and an
         // actionable message (e.g. "requires Administrator privileges") when
