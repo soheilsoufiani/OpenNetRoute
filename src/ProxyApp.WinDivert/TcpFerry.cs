@@ -688,24 +688,48 @@ internal sealed class TcpFerry : IDisposable
                 }
                 else if (upstreamEof)
                 {
-                    // The upstream leg closed cleanly. Deliver the server's close
-                    // to the client as a SEPARATE FIN|ACK — never piggybacked on
-                    // data (that set FIN on every segment and could break the
-                    // close on clients that treat data+FIN specially).
-                    //
-                    // The FIN is only sent once the client has ACKed every byte
-                    // we injected; its seq is the next server send-seq (which
-                    // consumes the FIN's own sequence number). The client's FIN,
-                    // received later, is ACKed by the capture loop (see
-                    // HandleExistingFlowAsync). This is a standard graceful
-                    // close: client → FIN (observed) → we ACK it → client exits.
-                    //
-                    // NOTE: the flow is NOT removed here — the client's FIN must
-                    // still reach HandleExistingFlowAsync so it can be ACKed (the
-                    // last step of the graceful close). Final cleanup happens in
-                    // the client-FIN path; the ContinueWith in
-                    // StartUpstreamReadPump is the safety net for abnormal exits.
-                    await InjectFinAfterAckAsync(flow, clientSynTuple, ct);
+                    if (ShouldResetOnUpstreamEof(flow.ClientBytesRecv, flow.ClientBytesSent))
+                    {
+                        // The upstream closed WITHOUT sending a single byte back,
+                        // even though the client sent data (e.g. the TLS
+                        // ClientHello). The connection failed before any server
+                        // data existed — a graceful FIN|ACK would look to the
+                        // browser like "server completed TLS and closed", and the
+                        // browser would wait (never FIN-ing back) while the flow
+                        // sat in Closing and the site hung. RST is the correct
+                        // failure signal: the browser sees the connection was
+                        // refused and retries immediately (visible in the user's
+                        // log as repeated SYNs to the same IP).
+                        Trace($"Upstream EOF with 0 bytes received after {flow.ClientBytesSent} sent — " +
+                              $"injecting RST to client for {flow.Key} (connection failed, not closed)");
+                        InjectRstToClient(clientSynTuple, flow);
+                        CleanupFlow(flow.Key, flow, "upstream-eof-zero-bytes");
+                    }
+                    else
+                    {
+                        // The upstream leg closed cleanly AFTER delivering data
+                        // (recv > 0) or with nothing sent by the client (an idle
+                        // server-initiated close). Deliver the server's close to
+                        // the client as a SEPARATE FIN|ACK — never piggybacked on
+                        // data (that set FIN on every segment and could break the
+                        // close on clients that treat data+FIN specially).
+                        //
+                        // The FIN is only sent once the client has ACKed every
+                        // byte we injected; its seq is the next server send-seq
+                        // (which consumes the FIN's own sequence number). The
+                        // client's FIN, received later, is ACKed by the capture
+                        // loop (see HandleExistingFlowAsync). This is a standard
+                        // graceful close: client → FIN (observed) → we ACK it →
+                        // client exits.
+                        //
+                        // NOTE: the flow is NOT removed here — the client's FIN
+                        // must still reach HandleExistingFlowAsync so it can be
+                        // ACKed (the last step of the graceful close). Final
+                        // cleanup happens in the client-FIN path; the ContinueWith
+                        // in StartUpstreamReadPump is the safety net for abnormal
+                        // exits.
+                        await InjectFinAfterAckAsync(flow, clientSynTuple, ct);
+                    }
                 }
                 // Neither EOF nor error (e.g. WinDivertSend failed): the flow is
                 // left Closing for the ContinueWith safety net to clean up.
@@ -1009,6 +1033,24 @@ internal sealed class TcpFerry : IDisposable
             Trace($"ACK WinDivertSend FAILED err={Marshal.GetLastWin32Error()}");
         }
     }
+
+    /// <summary>
+    /// Decides whether an upstream EOF should be delivered to the client as a
+    /// RST instead of a graceful FIN|ACK.
+    ///
+    /// Returns true when the upstream closed WITHOUT sending a single byte
+    /// back (recv == 0) even though the client had sent data (sent > 0) — e.g.
+    /// the TLS ClientHello went out but the server never responded. In that
+    /// case a FIN|ACK misleads the browser into thinking the server completed
+    /// a TLS handshake and closed gracefully; the browser waits for a reply
+    /// that never comes, the flow sits Closing until the safety-net timeout,
+    /// and the site hangs. RST is the correct failure signal: the browser
+    /// retries immediately.
+    ///
+    /// Exposed as internal for unit testing (no WinDivert handle required).
+    /// </summary>
+    internal static bool ShouldResetOnUpstreamEof(long clientBytesRecv, long clientBytesSent)
+        => clientBytesRecv == 0 && clientBytesSent > 0;
 
     /// <summary>Maps a WinDivert error code to a human-readable message.</summary>
     private static string DescribeError(int error) => error switch

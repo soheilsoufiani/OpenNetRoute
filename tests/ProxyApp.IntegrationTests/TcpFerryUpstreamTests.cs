@@ -118,4 +118,35 @@ public class TcpFerryUpstreamTests
     {
         Assert.Throws<ArgumentNullException>(() => new TcpFerry(null!));
     }
+
+    // ── Upstream-EOF close policy (the recv=0 hang) ──
+
+    [Fact]
+    public void ShouldResetOnUpstreamEof_ZeroBytesReceived_ClientSentData_Resets()
+    {
+        // The user's real-browser failure: the client sent its TLS ClientHello
+        // (197/303 bytes) but the upstream returned NOTHING and EOF'd. A
+        // graceful FIN|ACK would make the browser wait forever; it must be RST.
+        Assert.True(TcpFerry.ShouldResetOnUpstreamEof(clientBytesRecv: 0, clientBytesSent: 197));
+        Assert.True(TcpFerry.ShouldResetOnUpstreamEof(clientBytesRecv: 0, clientBytesSent: 303));
+    }
+
+    [Fact]
+    public void ShouldResetOnUpstreamEof_DataReceived_DoesNotReset()
+    {
+        // The upstream delivered data before closing (e.g. Google/Microsoft
+        // flows with recv=4533). This is a clean server-initiated close →
+        // graceful FIN|ACK is correct.
+        Assert.False(TcpFerry.ShouldResetOnUpstreamEof(clientBytesRecv: 4533, clientBytesSent: 2094));
+        Assert.False(TcpFerry.ShouldResetOnUpstreamEof(clientBytesRecv: 1, clientBytesSent: 100));
+    }
+
+    [Fact]
+    public void ShouldResetOnUpstreamEof_NothingSentByClient_DoesNotReset()
+    {
+        // The client sent nothing and the upstream closed — an idle
+        // server-initiated close (e.g. server timed out an idle connection).
+        // FIN|ACK is correct here.
+        Assert.False(TcpFerry.ShouldResetOnUpstreamEof(clientBytesRecv: 0, clientBytesSent: 0));
+    }
 }
