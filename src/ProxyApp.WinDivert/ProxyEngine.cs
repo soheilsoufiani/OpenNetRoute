@@ -17,7 +17,8 @@ namespace ProxyApp.WinDivert;
 /// </summary>
 public sealed class ProxyEngine : IProxyEngine, IDisposable
 {
-    private readonly Action<string>? _trace;
+    private readonly object _traceLock = new();
+    private Action<string>? _trace;
     private TcpFerry? _ferry;
 
     /// <summary>
@@ -28,6 +29,21 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
     public ProxyEngine(Action<string>? trace = null)
     {
         _trace = trace;
+    }
+
+    /// <summary>
+    /// Sets the diagnostic trace sink. The sink receives ferry events
+    /// (SYN captured, CONNECT timings, relay byte counts, WinDivert errors).
+    /// It may be called from background threads and must not block the
+    /// capture path. The new sink applies to the next Start; if the engine is
+    /// currently running the sink takes effect on the next restart.
+    /// </summary>
+    public void SetTrace(Action<string>? trace)
+    {
+        lock (_traceLock)
+        {
+            _trace = trace;
+        }
     }
 
     /// <inheritdoc />

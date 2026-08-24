@@ -110,6 +110,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<ProcessRow> _processes = new();
     private readonly ObservableCollection<ManualRuleRow> _manualRules = new();
     private readonly ObservableCollection<BundleRow> _bundles = new();
+    private readonly LogPanel _logPanel;
 
     public MainWindow(IProxyEngine engine, IProcessEnumerator processEnumerator)
     {
@@ -121,6 +122,15 @@ public partial class MainWindow : Window
         ProcessList.ItemsSource = _processes;
         ManualRuleList.ItemsSource = _manualRules;
         BundleList.ItemsSource = _bundles;
+
+        // Debug/Log panel: the engine's trace sink feeds a bounded ring buffer
+        // (fire-and-forget, never blocks the capture path); a dispatcher timer
+        // drains it to the UI in batches.
+        _logPanel = new LogPanel(Dispatcher);
+        DebugLogList.ItemsSource = _logPanel.Lines;
+        _engine.SetTrace(_logPanel.Append);
+        _logPanel.Log("INFO", "App started — log panel ready. Trace sink wired to the engine.");
+
         RefreshProcesses();
     }
 
@@ -296,6 +306,7 @@ public partial class MainWindow : Window
     private async void OnStartClicked(object sender, RoutedEventArgs e)
     {
         StartButton.IsEnabled = false;
+        _logPanel.Log("INFO", "Start clicked");
         try
         {
             SetStatus("Starting...");
@@ -305,20 +316,34 @@ public partial class MainWindow : Window
             var validation = ConfigurationValidator.Validate(settings);
             if (!validation.IsValid)
             {
-                SetStatus("Cannot start: " + string.Join("; ", validation.Errors), isError: true);
+                var msg = "Cannot start: " + string.Join("; ", validation.Errors);
+                SetStatus(msg, isError: true);
+                _logPanel.Log("ERR", msg);
                 return;
             }
+
+            // Elevation check (informs the user up front; WinDivertOpen will
+            // still surface its own actionable error if not elevated).
+            var elevated = IsRunningElevated();
+            _logPanel.Log(elevated ? "INFO" : "WARN",
+                elevated
+                    ? "Elevation check: process is running as Administrator."
+                    : "Elevation check: process is NOT elevated — packet interception (WinDivert) will fail. Run the app as Administrator.");
+            _logPanel.Log("INFO", $"Starting engine: proxy={settings.Proxy.Host}:{settings.Proxy.Port}, rules={settings.Rules.Count}");
 
             _engine.Start(settings);
             SetStatus("Status: Running");
             StopButton.IsEnabled = true;
+            _logPanel.Log("INFO", "Engine started — capturing SYN traffic. Trace lines follow.");
         }
         catch (Exception ex)
         {
             // The engine surfaces actionable errors (e.g. WinDivert requires
             // Administrator privileges); show them verbatim — never a silent
             // failure.
-            SetStatus("Cannot start: " + ex.Message, isError: true);
+            var msg = "Cannot start: " + ex.Message;
+            SetStatus(msg, isError: true);
+            _logPanel.Log("ERR", msg);
         }
         finally
         {
@@ -329,20 +354,31 @@ public partial class MainWindow : Window
     private async void OnStopClicked(object sender, RoutedEventArgs e)
     {
         StopButton.IsEnabled = false;
+        _logPanel.Log("INFO", "Stop clicked");
         try
         {
             await _engine.StopAsync();
             SetStatus("Status: Stopped");
+            _logPanel.Log("INFO", "Engine stopped.");
         }
         catch (Exception ex)
         {
-            SetStatus("Error while stopping: " + ex.Message, isError: true);
+            var msg = "Error while stopping: " + ex.Message;
+            SetStatus(msg, isError: true);
+            _logPanel.Log("ERR", msg);
         }
         finally
         {
             StartButton.IsEnabled = true;
             StopButton.IsEnabled = _engine.IsRunning;
         }
+    }
+
+    private static bool IsRunningElevated()
+    {
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        return new System.Security.Principal.WindowsPrincipal(identity)
+            .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
     }
 
     /// <summary>
@@ -410,5 +446,24 @@ public partial class MainWindow : Window
         StatusText.Foreground = isError
             ? System.Windows.Media.Brushes.Firebrick
             : System.Windows.Media.Brushes.Gray;
+    }
+
+    // ── Debug / Log panel ──
+
+    private void OnCopyLogClicked(object sender, RoutedEventArgs e)
+    {
+        _logPanel.CopyToClipboard();
+        _logPanel.Log("INFO", $"Copied {_logPanel.Lines.Count} log lines to clipboard.");
+    }
+
+    private void OnClearLogClicked(object sender, RoutedEventArgs e)
+    {
+        _logPanel.Clear();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _logPanel.Shutdown();
+        base.OnClosed(e);
     }
 }

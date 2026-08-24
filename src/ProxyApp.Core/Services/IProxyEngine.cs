@@ -23,4 +23,13 @@ public interface IProxyEngine : IDisposable
 
     /// <summary>Stops routing and releases all engine resources. Safe to call when not running.</summary>
     Task StopAsync();
+
+    /// <summary>
+    /// Sets the diagnostic trace sink. The sink receives engine events (SYN
+    /// captured, SOCKS5 CONNECT timings, relay byte counts, WinDivert errors)
+    /// as plain-text lines with a "[TcpFerry]" prefix. The sink may be invoked
+    /// from background threads; it MUST be cheap and non-blocking (e.g. append
+    /// to a bounded ring buffer) — never do UI work or I/O inline.
+    /// </summary>
+    void SetTrace(Action<string>? trace);
 }
