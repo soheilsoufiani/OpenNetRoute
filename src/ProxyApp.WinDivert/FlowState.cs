@@ -170,6 +170,94 @@ internal sealed class FlowState
     // ── Data-translation state ──
 
     /// <summary>
+    /// The window-scale shift the ferry OFFERED in its SYN-ACK (0 when the
+    /// client's SYN carried no window-scale option — per RFC 7323 the option
+    /// must not be sent unilaterally, and then both sides use shift 0).
+    /// Interprets the window field of every packet the ferry injects.
+    /// </summary>
+    public byte ServerWindowShift { get; set; }
+
+    /// <summary>
+    /// The window-scale shift the CLIENT offered in its SYN (0 when absent).
+    /// Interprets the window field of captured client packets, i.e. how much
+    /// server→client data may be in flight before the pump must wait.
+    /// </summary>
+    public byte ClientWindowShift { get; set; }
+
+    /// <summary>
+    /// The raw (unscaled) receive window most recently advertised by a captured
+    /// client segment. Initialized from the SYN; updated on every client packet.
+    /// Read by the upstream read pump for downstream flow control.
+    /// </summary>
+    private ushort _clientAdvertisedWindow = 0xFFFF;
+
+    /// <inheritdoc cref="_clientAdvertisedWindow"/>
+    public ushort ClientAdvertisedWindow
+    {
+        get => Volatile.Read(ref _clientAdvertisedWindow);
+        set => Volatile.Write(ref _clientAdvertisedWindow, value);
+    }
+
+    /// <summary>
+    /// The MSS the ferry advertised in its SYN-ACK (diagnostics; 0 when the
+    /// client's SYN carried no MSS option and none was advertised).
+    /// </summary>
+    public ushort AdvertisedMss { get; set; }
+
+    /// <summary>
+    /// Receive space the ferry advertises to the CLIENT for upload traffic
+    /// (the effective window is this value &lt;&lt; <see cref="ServerWindowShift"/>).
+    /// The legacy constant 29200 capped upload throughput at ~29200 bytes per
+    /// RTT; 1 MiB removes that ceiling while remaining modest in memory.
+    /// </summary>
+    internal const long FerryReceiveWindowBytes = 1024 * 1024;
+
+    /// <summary>
+    /// The window FIELD value the ferry puts in injected server→client packets:
+    /// <see cref="FerryReceiveWindowBytes"/> scaled down by the negotiated
+    /// <see cref="ServerWindowShift"/>, clamped to 16 bits. A pure permission
+    /// slip — the relay never buffers this much (writes go straight into the
+    /// upstream socket), it only bounds how far the client may run ahead.
+    /// </summary>
+    public ushort ServerAdvertisedWindowField => (ushort)Math.Min(
+        ushort.MaxValue,
+        FerryReceiveWindowBytes >> ServerWindowShift);
+
+    /// <summary>
+    /// The client's current receive window in BYTES (raw field &lt;&lt;
+    /// <see cref="ClientWindowShift"/>) — how much server→client data may be
+    /// outstanding before the pump must wait for the client's ACKs.
+    /// </summary>
+    public long ClientReceiveWindowBytes => (long)ClientAdvertisedWindow << ClientWindowShift;
+
+    /// <summary>
+    /// How many more server→client bytes the ferry may inject right now without
+    /// overrunning the client's advertised receive window:
+    /// window − (injected but not yet ACKed by the client).
+    ///
+    /// WHY: the pump previously ignored the client's window entirely and could
+    /// inject data beyond it — the client stack silently DISCARDS unacceptable
+    /// segments, and since the ferry never retransmits those bytes were lost
+    /// forever (a permanent stream hole under heavy download). With scaling
+    /// enabled windows grow large enough that respecting them is mandatory.
+    /// </summary>
+    public long AllowedUnackedBytesToClient
+    {
+        get
+        {
+            // accepted = highest client ACK − SYN-consumed server seq (wrap-safe).
+            var accepted = (long)(uint)(ClientAckedUpTo - (uint)(ServerIsn + 1));
+            if (accepted < 0)
+                accepted = 0;
+            var inFlight = ClientBytesRecv - accepted;
+            if (inFlight < 0)
+                inFlight = 0;
+            var allowed = ClientReceiveWindowBytes - inFlight;
+            return allowed > 0 ? allowed : 0;
+        }
+    }
+
+    /// <summary>
     /// The upstream socket's stream, set once the SOCKS5 CONNECT completes.
     /// Null until the upstream leg is established.
     /// </summary>

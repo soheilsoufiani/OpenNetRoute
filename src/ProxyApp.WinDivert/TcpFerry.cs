@@ -25,6 +25,28 @@ internal sealed class TcpFerry : IDisposable
     internal const uint DefaultServerIsn = 0x12345678;
 
     /// <summary>
+    /// Per-packet diagnostic traces (packet hex dumps, per-read lines).
+    /// Off by default: at bulk-transfer rates they emit thousands of string
+    /// allocations per second through the UI log sink. Opt in for one Start
+    /// session with PROXYAPP_TRACE_PACKETS=1.
+    /// </summary>
+    private static readonly bool VerbosePackets =
+        Environment.GetEnvironmentVariable("PROXYAPP_TRACE_PACKETS") == "1";
+
+    /// <summary>
+    /// Upper clamp for the MSS the ferry advertises in its SYN-ACK (Ethernet
+    /// MTU 1500 − IP 20 − TCP 20). The client's own offer is honored below this.
+    /// </summary>
+    internal const ushort MaxAdvertisedMss = 1460;
+
+    /// <summary>
+    /// How long the downstream pump may see a zero client window before it
+    /// proceeds anyway (legacy behavior) instead of waiting forever — a safety
+    /// valve against an ACK-tracking desync turning into a permanent stall.
+    /// </summary>
+    private static readonly TimeSpan WindowStallBypassAfter = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// Retained for backward compatibility with the serial-establishment design
     /// (the SYN-ACK was held until the SOCKS5 CONNECT finished, adding that
     /// delay to EVERY new connection). Parallel establishment (SYN-ACK injected
@@ -56,6 +78,13 @@ internal sealed class TcpFerry : IDisposable
     private long _windivertErrors;
     private long _connectFailures;
 
+    // ── Throughput/quality counters for the periodic [PERF] report ──
+    private long _bytesRelayedUpstream;     // client → SOCKS5 upstream bytes
+    private long _bytesRelayedToClient;     // upstream → client injected bytes
+    private long _duplicateSegmentsDropped; // retransmits/probes/gaps dropped by the sequencer
+    private long _windowStallBypasses;      // downstream window closed > bypass threshold
+    private long _flowsExpiredIdle;         // zombie flows removed by the ticker sweep
+
     /// <summary>Total pure SYNs attributed to a proxied rule.</summary>
     internal long SynsCaptured => Interlocked.Read(ref _synsCaptured);
 
@@ -70,6 +99,12 @@ internal sealed class TcpFerry : IDisposable
 
     /// <summary>Total SOCKS5 CONNECT failures.</summary>
     internal long ConnectFailures => Interlocked.Read(ref _connectFailures);
+
+    /// <summary>Period between [PERF] report bursts (also drives expiry sweep).</summary>
+    internal static readonly TimeSpan HealthInterval = TimeSpan.FromSeconds(10);
+
+    /// <summary>Hard cap for one [PERF] report burst — keeps the log small.</summary>
+    internal const int MaxPerfReportBytes = 5 * 1024;
 
     /// <summary>Emits a diagnostic trace line (defaults to a no-op).</summary>
     private void Trace(string message) => _trace?.Invoke($"[TcpFerry] {message}");
@@ -157,29 +192,88 @@ internal sealed class TcpFerry : IDisposable
     }
 
     /// <summary>
-    /// Periodic health-stats ticker (every 5s): active flows, SYN captured,
-    /// SYN-ACK injected, RST injected, CONNECT failures, WinDivert errors.
-    /// Fire-and-forget; cheap Interlocked reads; lets the debug panel show
-    /// whether the capture path is keeping up under browser load.
+    /// Periodic health ticker: every <see cref="HealthInterval"/> it emits a
+    /// compact [PERF] report (interval throughput, totals, quality counters)
+    /// capped at <see cref="MaxPerfReportBytes"/>, then expires zombie flows.
+    ///
+    /// Design goals: IMPORTANT information only, at a readable cadence — no
+    /// per-packet noise (that lives behind PROXYAPP_TRACE_PACKETS) and no
+    /// unbounded log growth. Runs off the packet hot path entirely.
     /// </summary>
     private void StartHealthTicker(CancellationToken ct)
     {
         _ = Task.Run(async () =>
         {
+            var prevUp = 0L;
+            var prevDown = 0L;
             try
             {
                 while (!ct.IsCancellationRequested)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(5), ct);
-                    Trace($"STATS: flows={_flowTable.Count} " +
-                          $"syns={SynsCaptured} synacks={SynAcksInjected} " +
-                          $"rsts={RstsInjected} connectFails={ConnectFailures} " +
-                          $"winDivertErrors={WinDivertErrors}");
+                    await Task.Delay(HealthInterval, ct);
+
+                    // ── [PERF] report ──
+                    var up = Interlocked.Read(ref _bytesRelayedUpstream);
+                    var down = Interlocked.Read(ref _bytesRelayedToClient);
+                    var seconds = HealthInterval.TotalSeconds;
+                    var downMbps = (down - prevDown) * 8 / seconds / 1_000_000.0;
+                    var upMbps = (up - prevUp) * 8 / seconds / 1_000_000.0;
+                    prevUp = up;
+                    prevDown = down;
+
+                    // Size guard: stop appending once the burst exceeds the cap.
+                    var budget = MaxPerfReportBytes;
+                    void Emit(string line)
+                    {
+                        if (budget <= 0) return;
+                        budget -= line.Length + 1;
+                        Trace(line);
+                    }
+
+                    Emit($"[PERF] interval={HealthInterval.TotalSeconds:F0}s " +
+                         $"down={downMbps:F1} Mbps up={upMbps:F1} Mbps");
+                    Emit($"[PERF] totals down={FormatBytes(down)} up={FormatBytes(up)} | " +
+                         $"flows={_flowTable.Count} syns={SynsCaptured} synacks={SynAcksInjected} rsts={RstsInjected}");
+                    Emit($"[PERF] quality dup-dropped={Interlocked.Read(ref _duplicateSegmentsDropped)} " +
+                         $"stall-bypasses={Interlocked.Read(ref _windowStallBypasses)} " +
+                         $"expired-flows={Interlocked.Read(ref _flowsExpiredIdle)} " +
+                         $"connect-fails={ConnectFailures} wd-errors={WinDivertErrors}");
+
+                    // ── Expire idle / abandoned flows (bounded leaks). This
+                    //    catches: half-open handshakes where the client never
+                    //    ACKed the SYN-ACK, flows whose client RST was somehow
+                    //    missed, and stuck closes. Active flows keep touching
+                    //    LastActivityUtc, so only true zombies expire.
+                    foreach (var expired in _flowTable.RemoveExpired(_idleTimeout))
+                    {
+                        try
+                        {
+                            Interlocked.Increment(ref _flowsExpiredIdle);
+                            Trace($"Expiring idle/stuck flow {expired.Key} " +
+                                  $"(status={expired.Status}, last activity {expired.LastActivityUtc:HH:mm:ss})");
+                            expired.Status = FlowStatus.Closed;
+                            DisposeFlowResources(expired);
+                        }
+                        catch
+                        {
+                            // The sweep must never die — a failed dispose of one
+                            // zombie flow must not stop the others.
+                        }
+                    }
                 }
             }
             catch (OperationCanceledException) { }
         }, ct);
     }
+
+    /// <summary>Formats a byte count for the [PERF] report (KB/MB/GB).</summary>
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1_073_741_824 => $"{bytes / 1_073_741_824.0:F2} GB",
+        >= 1_048_576 => $"{bytes / 1_048_576.0:F1} MB",
+        >= 1024 => $"{bytes / 1024.0:F1} KB",
+        _ => $"{bytes} B"
+    };
 
     /// <summary>
     /// Stops the capture loop, closes the handle, and drains all pending flows.
@@ -329,7 +423,10 @@ internal sealed class TcpFerry : IDisposable
             tuple.SrcIp, tuple.SrcPort, tuple.DstIp, tuple.DstPort);
 
         var processName = processInfo?.ExecutableName;
-        var mode = RuleEngine.Evaluate(_rules, processName, /* processPath */ null);
+        // Pass the REAL executable path: hardcoding null here silently disabled
+        // every path-based and FolderPath-bundle rule while the UI kept
+        // offering them (RuleEngine matches by name OR path).
+        var mode = RuleEngine.Evaluate(_rules, processName, processInfo?.ExecutablePath);
 
         Trace($"SYN src={tuple.SrcIp}:{tuple.SrcPort} dst={tuple.DstIp}:{tuple.DstPort} " +
               $"pid={processInfo?.ProcessId} name={processName ?? "?"} mode={mode}");
@@ -348,13 +445,30 @@ internal sealed class TcpFerry : IDisposable
         // both pass the Contains check below before either adds the flow — so
         // the TryAdd return value is authoritative: only the winner proceeds to
         // establish an upstream; the loser passes the duplicate SYN through.
+        // ── Mirror the client's SYN TCP options (MSS, window scale). Without
+        //    these the client fell back to MSS 536 and a 64 KiB unscaled
+        //    window, pinning throughput at ~29200 bytes/RTT (the Speedtest
+        //    finding). Per RFC 7323 the WS option may only be sent when the
+        //    client's SYN carried one; our shift is our own choice. ──
+        var synOptions = TcpPacketParser.ParseSynOptions(buffer, readLen, tuple);
+        var advertisedMss = synOptions.HasMss
+            ? Math.Clamp(synOptions.Mss, (ushort)536, MaxAdvertisedMss)
+            : MaxAdvertisedMss;
+
         var flow = new FlowState(
             flowKey, tuple.Seq, DefaultServerIsn, addr)
         {
             ProcessName = processName,
             ProcessId = processInfo?.ProcessId ?? 0,
-            Status = FlowStatus.Connecting
+            Status = FlowStatus.Connecting,
+            ClientWindowShift = synOptions.WindowScale,
+            AdvertisedMss = advertisedMss,
+            ServerWindowShift = synOptions.HasWindowScale
+                ? TcpPacketBuilder.FerryWindowScaleShift
+                : (byte)0
         };
+        if (tuple.Window != 0)
+            flow.ClientAdvertisedWindow = tuple.Window;
 
         if (!_flowTable.TryAdd(flowKey, flow))
         {
@@ -383,7 +497,7 @@ internal sealed class TcpFerry : IDisposable
         Trace($"Injecting crafted SYN-ACK seq={DefaultServerIsn} ack={tuple.Seq + 1u}");
         var synAck = TcpPacketBuilder.BuildSynAck(
             tuple.DstIp, tuple.SrcIp, tuple.DstPort, tuple.SrcPort,
-            DefaultServerIsn, tuple.Seq);
+            DefaultServerIsn, tuple.Seq, advertisedMss, synOptions.HasWindowScale);
 
         var synAddr = addr;
         synAddr.LayerEventFlags &= ~(1uL << 17); // Outbound → 0 (inbound), Impostor stays 0
@@ -465,7 +579,13 @@ internal sealed class TcpFerry : IDisposable
         // and disposes the pending upstream — so there is nothing more to do.
         if (!flow.EnqueueProcessing(() => ApplyUpstreamEstablishedAsync(flow, tuple, ct)))
         {
-            Trace($"Flow {flow.Key} cleaned up during CONNECT — upstream already disposed by cleanup.");
+            // The flow was cleaned up while the CONNECT was finishing (client
+            // RST/FIN, ferry stop, idle-expiry). Depending on interleaving,
+            // cleanup may not have been able to claim/dispose the connection
+            // (TryClaim returns null until TryStore runs) — so dispose HERE to
+            // guarantee no socket is orphaned.
+            Trace($"Flow {flow.Key} cleaned up during CONNECT — disposing completed upstream.");
+            upstream.Dispose();
         }
     }
 
@@ -514,6 +634,7 @@ internal sealed class TcpFerry : IDisposable
                       $"(ClientBytesSent already includes them)");
                 await upstream.Stream.WriteAsync(buffered, ct);
                 flow.BytesFlushedFromBuffer += buffered.Length;
+                Interlocked.Add(ref _bytesRelayedUpstream, buffered.Length);
                 flow.Touch();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -608,9 +729,9 @@ internal sealed class TcpFerry : IDisposable
         {
             while (!ct.IsCancellationRequested && flow.UpstreamStream != null)
             {
-                Trace($"Waiting on upstream ReadAsync...");
+                if (VerbosePackets) Trace("Waiting on upstream ReadAsync...");
                 var n = await flow.UpstreamStream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
-                Trace($"Upstream ReadAsync returned {n} bytes");
+                if (VerbosePackets) Trace($"Upstream ReadAsync returned {n} bytes");
                 if (n <= 0)
                 {
                     Trace("Upstream ReadAsync returned EOF");
@@ -622,52 +743,108 @@ internal sealed class TcpFerry : IDisposable
                 // close is NOT piggybacked on the data (that would set FIN on
                 // every segment); it is delivered as a separate FIN|ACK once the
                 // client has ACKed the data (see InjectFinAfterAckAsync).
+                //
+                // Downstream flow control: inject at most what the client's
+                // advertised receive window permits. Data injected beyond the
+                // window is silently DISCARDED by the client's TCP stack and —
+                // since the ferry never retransmits — lost forever, so this is
+                // a correctness requirement, not an optimization.
                 Trace($"Relay upstream→client {n} bytes (seq={flow.NextServerSeq}, ack={flow.NextClientAck})");
-
-                var packet = TcpPacketBuilder.BuildDataPacket(
-                    clientSynTuple.DstIp, clientSynTuple.SrcIp,
-                    clientSynTuple.DstPort, clientSynTuple.SrcPort,
-                    flow.NextServerSeq,
-                    flow.NextClientAck,
-                    buffer.AsSpan(0, n));
-
-                var addr = flow.SynAddress;
-                addr.LayerEventFlags &= ~(1uL << 17); // Outbound → 0 (inbound), Impostor NOT set
-                WinDivertNative.WinDivertHelperCalcChecksums(packet, (uint)packet.Length, ref addr, 0);
-
-                Trace($"WinDivertSend inbound packet ({packet.Length} bytes, seq={flow.NextServerSeq}, ack={flow.NextClientAck}, flags=0x{packet[20 + 13]:X2})");
-
-                // ── Diagnostic: dump the complete response packet ──
-                Trace($"RESPONSE_PACKET: IP={clientSynTuple.DstIp}->{clientSynTuple.SrcIp} " +
-                      $"len={packet.Length} proto=6 ttl={packet[8]}");
-                Trace($"RESPONSE_PACKET: TCP ports={clientSynTuple.DstPort}->{clientSynTuple.SrcPort} " +
-                      $"seq={flow.NextServerSeq} ack={flow.NextClientAck} " +
-                      $"flags=0x{packet[20 + 13]:X2} window={(packet[20 + 14] << 8) | packet[20 + 15]} " +
-                      $"payload={n}");
-                Trace($"RESPONSE_PACKET: addr Outbound={addr.Outbound} Impostor={addr.Impostor} " +
-                      $"IpChecksum={addr.IpChecksumValid} TcpChecksum={addr.TcpChecksumValid} " +
-                      $"IfIdx={addr.IfIdx} SubIfIdx={addr.SubIfIdx} " +
-                      $"IPv6={addr.IPv6} Loopback={addr.Loopback} Layer=0x{addr.Layer:X2} Event=0x{addr.Event:X2}");
-                var hexLen = Math.Min(packet.Length, 64);
-                var hex = BitConverter.ToString(packet, 0, hexLen).Replace("-", " ");
-                Trace($"RESPONSE_PACKET hex({hexLen}): {hex}");
-                if (!WinDivertNative.WinDivertSend(
-                        _captureHandle, packet, (uint)packet.Length, IntPtr.Zero, ref addr))
+                var sent = 0;
+                var stalledMs = 0;
+                var bypassWarned = false;
+                while (sent < n && !ct.IsCancellationRequested && flow.UpstreamStream != null)
                 {
-                    Interlocked.Increment(ref _windivertErrors);
-                    Trace($"WinDivertSend FAILED err={Marshal.GetLastWin32Error()}");
-                    break;
-                }
+                    var allowed = flow.AllowedUnackedBytesToClient;
+                    if (allowed <= 0)
+                    {
+                        // Window exhausted: wait for the client's ACKs to open
+                        // it again. Safety valve — if nothing opens for 5s,
+                        // proceed legacy-style rather than hang forever.
+                        await Task.Delay(2, ct);
+                        stalledMs += 2;
+                        if (stalledMs < WindowStallBypassAfter.TotalMilliseconds)
+                            continue;
+                        if (!bypassWarned)
+                        {
+                            Trace($"Client window still closed after {WindowStallBypassAfter.TotalSeconds:F0}s " +
+                                  $"for {flow.Key} — proceeding beyond window (possible ACK desync)");
+                            Interlocked.Increment(ref _windowStallBypasses);
+                            bypassWarned = true;
+                        }
+                        allowed = int.MaxValue;
+                    }
 
-                flow.ClientBytesRecv += n;
-                flow.Touch();
+                    var take = (int)Math.Min(n - sent, Math.Min(allowed, ushort.MaxValue));
+                    var packet = TcpPacketBuilder.BuildDataPacket(
+                        clientSynTuple.DstIp, clientSynTuple.SrcIp,
+                        clientSynTuple.DstPort, clientSynTuple.SrcPort,
+                        flow.NextServerSeq,
+                        flow.NextClientAck,
+                        buffer.AsSpan(sent, take),
+                        flow.ServerAdvertisedWindowField);
+
+                    var addr = flow.SynAddress;
+                    addr.LayerEventFlags &= ~(1uL << 17); // Outbound → 0 (inbound), Impostor NOT set
+                    WinDivertNative.WinDivertHelperCalcChecksums(packet, (uint)packet.Length, ref addr, 0);
+
+                    if (VerbosePackets)
+                    {
+                        Trace($"WinDivertSend inbound packet ({packet.Length} bytes, seq={flow.NextServerSeq}, ack={flow.NextClientAck}, flags=0x{packet[20 + 13]:X2})");
+
+                        // ── Diagnostic: dump the complete response packet ──
+                        Trace($"RESPONSE_PACKET: IP={clientSynTuple.DstIp}->{clientSynTuple.SrcIp} " +
+                              $"len={packet.Length} proto=6 ttl={packet[8]}");
+                        Trace($"RESPONSE_PACKET: TCP ports={clientSynTuple.DstPort}->{clientSynTuple.SrcPort} " +
+                              $"seq={flow.NextServerSeq} ack={flow.NextClientAck} " +
+                              $"flags=0x{packet[20 + 13]:X2} window={(packet[20 + 14] << 8) | packet[20 + 15]} " +
+                              $"payload={take}");
+                        Trace($"RESPONSE_PACKET: addr Outbound={addr.Outbound} Impostor={addr.Impostor} " +
+                              $"IpChecksum={addr.IpChecksumValid} TcpChecksum={addr.TcpChecksumValid} " +
+                              $"IfIdx={addr.IfIdx} SubIfIdx={addr.SubIfIdx} " +
+                              $"IPv6={addr.IPv6} Loopback={addr.Loopback} Layer=0x{addr.Layer:X2} Event=0x{addr.Event:X2}");
+                        var hexLen = Math.Min(packet.Length, 64);
+                        var hex = BitConverter.ToString(packet, 0, hexLen).Replace("-", " ");
+                        Trace($"RESPONSE_PACKET hex({hexLen}): {hex}");
+                    }
+
+                    if (!WinDivertNative.WinDivertSend(
+                            _captureHandle, packet, (uint)packet.Length, IntPtr.Zero, ref addr))
+                    {
+                        Interlocked.Increment(ref _windivertErrors);
+                        Trace($"WinDivertSend FAILED err={Marshal.GetLastWin32Error()}");
+                        // An abnormal pump exit must REACH the client: marking
+                        // this as an upstream error makes the finally block
+                        // inject a RST instead of leaving the connection to die
+                        // silently in the pump-exit safety net.
+                        upstreamError = true;
+                        return;
+                    }
+
+                    flow.ClientBytesRecv += take;
+                    Interlocked.Add(ref _bytesRelayedToClient, take);
+                    flow.Touch();
+                    sent += take;
+                }
             }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            Trace($"Upstream read pump error for {flow.Key}: {ex.Message}");
-            upstreamError = true;
+            if (flow.Status == FlowStatus.Closed)
+            {
+                // Expected teardown race: CleanupFlow disposed the upstream
+                // stream under our pending read ("The I/O operation has been
+                // aborted..."). The client was already notified by whoever
+                // cleaned up — keep this OUT of the user-visible error log so
+                // real errors are not drowned in shutdown noise.
+                Debug.WriteLine($"[TcpFerry] Pump read aborted during teardown of {flow.Key}: {ex.Message}");
+            }
+            else
+            {
+                Trace($"Upstream read pump error for {flow.Key}: {ex.Message}");
+                upstreamError = true;
+            }
         }
         finally
         {
@@ -749,11 +926,18 @@ internal sealed class TcpFerry : IDisposable
 
         while (!ct.IsCancellationRequested && flow.Status == FlowStatus.Closing)
         {
-            if (flow.ClientAckedUpTo >= finSeq)
+            if (SequenceAtLeast(flow.ClientAckedUpTo, finSeq))
                 break;
             if (DateTime.UtcNow >= deadline)
             {
-                Trace($"FIN wait timed out (acked={flow.ClientAckedUpTo}, need={finSeq})");
+                // The client never accepted all injected data within the wait
+                // window (slow reader, paused download, stalled window).
+                // Returning WITHOUT any terminal packet made the browser hang
+                // until its own timeout — the connection died silently when
+                // the pump-exit safety net cleaned up. A RST tells it plainly
+                // that this connection is over so it can fail fast and retry.
+                Trace($"FIN wait timed out (acked={flow.ClientAckedUpTo}, need={finSeq}) — resetting client");
+                InjectRstToClient(tuple, flow);
                 return;
             }
             await Task.Delay(20, ct);
@@ -764,7 +948,7 @@ internal sealed class TcpFerry : IDisposable
 
         var fin = TcpPacketBuilder.BuildFin(
             tuple.DstIp, tuple.SrcIp, tuple.DstPort, tuple.SrcPort,
-            finSeq, flow.NextClientAck);
+            finSeq, flow.NextClientAck, flow.ServerAdvertisedWindowField);
 
         var addr = flow.SynAddress;
         addr.LayerEventFlags &= ~(1uL << 17); // inbound
@@ -867,12 +1051,23 @@ internal sealed class TcpFerry : IDisposable
             // pump's finally, HandleExistingFlowAsync) never act on a
             // half-torn-down flow.
             flow.Status = FlowStatus.Closed;
-            try { flow.UpstreamStream?.Dispose(); } catch { }
-            try { flow.TryClaimPendingUpstream()?.Dispose(); } catch { }
-            try { flow.LoopCts?.Cancel(); } catch { }
-            try { flow.LoopCts?.Dispose(); } catch { }
-            flow.CompleteProcessing(); // lets the per-flow consumer exit
+            DisposeFlowResources(flow);
         }
+    }
+
+    /// <summary>
+    /// Disposes everything a flow owns: the upstream stream, an unclaimed
+    /// CONNECT result, the per-flow cancellation source, and the processing
+    /// channel. Caller must have removed the flow from the table (or never
+    /// added it) and set <see cref="FlowStatus.Closed"/> first.
+    /// </summary>
+    private static void DisposeFlowResources(FlowState flow)
+    {
+        try { flow.UpstreamStream?.Dispose(); } catch { }
+        try { flow.TryClaimPendingUpstream()?.Dispose(); } catch { }
+        try { flow.LoopCts?.Cancel(); } catch { }
+        try { flow.LoopCts?.Dispose(); } catch { }
+        flow.CompleteProcessing(); // lets the per-flow consumer exit
     }
 
     /// <summary>
@@ -897,6 +1092,25 @@ internal sealed class TcpFerry : IDisposable
             // Already cleaned up — nothing to do.
             return;
         }
+
+        // ── Client RST: the client aborted the connection (page navigation,
+        //    tab close, app cancel, socket kill). Tear the flow and upstream
+        //    socket down IMMEDIATELY. Previously the RST was swallowed here:
+        //    the ferry kept pumping data into a dead tuple (the client's stack
+        //    answered with more ignored RSTs) and the flow leaked until STOP.
+        //    Nothing is injected back — the client has already reset its side.
+        //    Cost on the hot path: one bool check per packet. ──
+        if (tuple.IsRst)
+        {
+            Trace($"Client sent RST — tearing down {flow.Key}");
+            CleanupFlow(flow.Key, flow, "client-rst");
+            return;
+        }
+
+        // Every captured client segment refreshes the advertised receive window
+        // the downstream pump must respect (pure ACKs are its main updates).
+        if (tuple.Window != 0)
+            flow.ClientAdvertisedWindow = tuple.Window;
 
         // ── Parallel-establishment path: buffer client payload until the
         //    SOCKS5 CONNECT completes. The flow may be Connecting (CONNECT in
@@ -941,8 +1155,23 @@ internal sealed class TcpFerry : IDisposable
         //    before capturing any new payload. ──
         if (!flow.UpstreamReady)
         {
+            // Dedup applies here too: retransmitted/probe segments that arrive
+            // while the CONNECT is in flight must not enter the pending buffer.
+            var plan = RelaySequencer.Plan(flow.NextClientAck, tuple.Seq, payloadLen);
+            var newLen = payloadLen - plan.SkipBytes;
+            if (plan.IsGap || newLen <= 0)
+            {
+                Interlocked.Increment(ref _duplicateSegmentsDropped);
+                Trace($"Buffering path: duplicate/gap segment dropped " +
+                      $"({payloadLen} bytes at seq={tuple.Seq}, expected={flow.NextClientAck})");
+                flow.Touch();
+                InjectAckToClient(flow, tuple);
+                return;
+            }
+
             var tcpOffset = (buffer[0] & 0x0F) * 4;
-            var payload = buffer.AsSpan(tcpOffset + tuple.TcpHeaderLen, payloadLen);
+            var payload = buffer.AsSpan(
+                tcpOffset + tuple.TcpHeaderLen + plan.SkipBytes, newLen);
 
             if (flow.TryAppendPendingBuffer(payload))
             {
@@ -950,9 +1179,9 @@ internal sealed class TcpFerry : IDisposable
                 // correct — the client's ACK sequence is ClientIsn + 1 + ClientBytesSent.
                 // The flushed bytes also count; the client's view of what was sent
                 // is monotonic even though the upstream write is deferred.
-                flow.ClientBytesSent += payloadLen;
+                flow.ClientBytesSent += newLen;
                 flow.Touch();
-                Trace($"Buffered {payloadLen} client bytes (pending={flow.PendingBufferLength})");
+                Trace($"Buffered {newLen} client bytes (pending={flow.PendingBufferLength})");
                 InjectAckToClient(flow, tuple);
             }
             else
@@ -975,7 +1204,37 @@ internal sealed class TcpFerry : IDisposable
         }
 
         var tcpOffset2 = (buffer[0] & 0x0F) * 4;
-        var payload2 = buffer.AsMemory(tcpOffset2 + tuple.TcpHeaderLen, payloadLen);
+
+        // ── Exactly-once sequencing: only bytes at/after NextClientAck are
+        //    relayed. Retransmissions, keepalive and persist probes (which
+        //    carry already-ACKed data at seq−1) would otherwise be written as
+        //    fresh bytes and corrupt the upstream stream (the Speedtest upload
+        //    failure). Partial overlaps are sliced to their new tail. ──
+        var relayPlan = RelaySequencer.Plan(flow.NextClientAck, tuple.Seq, payloadLen);
+        var relayNewLen = payloadLen - relayPlan.SkipBytes;
+        if (relayNewLen <= 0)
+        {
+            Interlocked.Increment(ref _duplicateSegmentsDropped);
+            Trace($"Relay: duplicate segment dropped ({payloadLen} bytes at seq={tuple.Seq}, " +
+                  $"expected={flow.NextClientAck})");
+            flow.Touch();
+            InjectAckToClient(flow, tuple);
+            return;
+        }
+        if (relayPlan.IsGap)
+        {
+            // Should not occur (same-flow packets are serialized; nothing skips
+            // data) — drop and re-ACK so the client retransmits the missing
+            // range instead of building a hole into the upstream stream.
+            Interlocked.Increment(ref _duplicateSegmentsDropped);
+            Trace($"Relay: out-of-order segment dropped ({payloadLen} bytes at seq={tuple.Seq}, " +
+                  $"expected={flow.NextClientAck}) — awaiting retransmission");
+            flow.Touch();
+            InjectAckToClient(flow, tuple);
+            return;
+        }
+
+        var payload2 = buffer.AsMemory(tcpOffset2 + tuple.TcpHeaderLen + relayPlan.SkipBytes, relayNewLen);
 
         try
         {
@@ -990,13 +1249,17 @@ internal sealed class TcpFerry : IDisposable
             // would be corrupt — the exactly-once integration test
             // (TcpFerryDataRelayTests.Relay_ExactlyOnce_ByteLevel) asserts
             // this cannot happen.
-            Trace($"Relay client→upstream {payloadLen} bytes (total sent={flow.ClientBytesSent + payloadLen})");
+            Trace($"Relay client→upstream {relayNewLen} bytes (total sent={flow.ClientBytesSent + relayNewLen})");
             await flow.UpstreamStream.WriteAsync(payload2, ct);
-            flow.ClientBytesSent += payloadLen;
+            flow.ClientBytesSent += relayNewLen;
+            Interlocked.Add(ref _bytesRelayedUpstream, relayNewLen);
             flow.Touch();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            if (flow.Status == FlowStatus.Closed)
+                return; // lost the cleanup race — never inject into a dead tuple
+
             // Upstream write failed — the flow is broken; fail the client and clean up.
             Debug.WriteLine($"[TcpFerry] Upstream write failed for {flow.Key}: {ex.Message}");
             InjectRstToClient(tuple, flow);
@@ -1021,7 +1284,8 @@ internal sealed class TcpFerry : IDisposable
             tuple.DstIp, tuple.SrcIp,
             tuple.DstPort, tuple.SrcPort,
             (uint)(flow.ServerIsn + 1 + flow.ClientBytesRecv),
-            (uint)(flow.ClientIsn + 1 + flow.ClientBytesSent));
+            (uint)(flow.ClientIsn + 1 + flow.ClientBytesSent),
+            flow.ServerAdvertisedWindowField);
 
         var addr = flow.SynAddress;
         addr.LayerEventFlags &= ~(1uL << 17); // inbound, Impostor NOT set
@@ -1051,6 +1315,15 @@ internal sealed class TcpFerry : IDisposable
     /// </summary>
     internal static bool ShouldResetOnUpstreamEof(long clientBytesRecv, long clientBytesSent)
         => clientBytesRecv == 0 && clientBytesSent > 0;
+
+    /// <summary>
+    /// Wraparound-safe sequence-space comparison (RFC 1982 semantics for a
+    /// single window): returns true when <paramref name="a"/> is at or after
+    /// <paramref name="b"/>. A plain <c>&gt;=</c> on raw uints breaks when the
+    /// 32-bit sequence space wraps on very long-lived bulk transfers.
+    /// </summary>
+    internal static bool SequenceAtLeast(uint a, uint b)
+        => a == b || ((a - b) & 0x80000000u) == 0;
 
     /// <summary>Maps a WinDivert error code to a human-readable message.</summary>
     private static string DescribeError(int error) => error switch

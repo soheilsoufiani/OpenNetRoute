@@ -16,12 +16,19 @@
        the normal native DLL search path (no runtime resolver needed). The source
        is the WinDivert native library kept in the repository's reference tree
        (WinDivert itself is dual-licensed LGPL-3.0-or-later / GPL-2.0). The DLL is
-       copied to this project's output and transitively to consumers (e.g. the
-       integration-test host). This must NOT be confused with the kernel driver
-       WinDivert64.sys, which is installed as a service separately. -->
+        copied to this project's output and transitively to consumers (e.g. the
+        integration-test host).
+        WinDivert64.sys (the kernel driver) MUST sit next to WinDivert.dll:
+        WinDivertOpen() installs/starts the driver service pointing at the .sys
+        beside the DLL itself, so a missing .sys surfaces as error 2
+        (ERROR_FILE_NOT_FOUND) at Start. Same source tree, dual-licensed
+        LGPL-3.0-or-later / GPL-2.0. -->
   <ItemGroup>
     <None Include="..\..\references\TunnelX\AppTunnel\NativeLibs\x64\WinDivert.dll"
           Link="WinDivert.dll"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\references\TunnelX\AppTunnel\NativeLibs\x64\WinDivert64.sys"
+          Link="WinDivert64.sys"
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

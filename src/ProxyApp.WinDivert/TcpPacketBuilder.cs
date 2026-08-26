@@ -22,28 +22,74 @@ namespace ProxyApp.WinDivert;
 /// </summary>
 internal static class TcpPacketBuilder
 {
-    /// <summary>Builds a SYN-ACK packet (no payload) for the client's held SYN.</summary>
+    /// <summary>The window-scale shift the ferry offers in its SYN-ACK.</summary>
+    internal const byte FerryWindowScaleShift = 8;
+
+    /// <summary>
+    /// Builds a SYN-ACK packet (no payload) for the client's held SYN.
+    ///
+    /// TCP options matter for throughput: without an MSS option Windows falls
+    /// back to MSS 536, and without a window-scale option BOTH sides disable
+    /// scaling (RFC 7323) and cap the receive window at 64 KiB. Together those
+    /// two omissions pinned ferry throughput at ~29200 bytes per RTT.
+    /// Options are padded to a 4-byte boundary:
+    ///   MSS only: MSS(4)+NOP×4     → options 8 bytes, data offset 7
+    ///   WS only:  WS(3)+NOP        → options 4 bytes, data offset 6
+    ///   Both:     MSS(4)+WS(3)+NOP → options 8 bytes, data offset 7
+    /// </summary>
     /// <param name="serverIp">The real destination IP the client attempted to reach.</param>
     /// <param name="clientIp">The client's local IP.</param>
     /// <param name="serverPort">The real destination port.</param>
     /// <param name="clientPort">The client's ephemeral source port.</param>
     /// <param name="serverIsn">The server ISN (S1) to present to the client.</param>
     /// <param name="clientIsn">The client ISN from the captured SYN.</param>
+    /// <param name="mss">MSS value to advertise (0 omits the option).</param>
+    /// <param name="withWindowScale">Include the window-scale option (shift <see cref="FerryWindowScaleShift"/>). Per RFC 7323 it must only be sent when the client's SYN carried one.</param>
     public static byte[] BuildSynAck(
         IPAddress serverIp,
         IPAddress clientIp,
         ushort serverPort,
         ushort clientPort,
         uint serverIsn,
-        uint clientIsn)
+        uint clientIsn,
+        ushort mss = 0,
+        bool withWindowScale = false)
     {
-        var packet = new byte[40];
+        var useMss = mss > 0;
+        var optLen = 0;
+        if (useMss) optLen += 4;
+        if (withWindowScale) optLen += 4;
+        if (useMss && !withWindowScale) optLen += 4; // pad the lone MSS block to 8 bytes
+
+        var tcpLen = 20 + optLen;
+        var packet = new byte[20 + tcpLen];
         WriteIpHeader(packet, packet.Length, serverIp, clientIp);
-        var tcp = 20;
-        // Advertise a reasonable window (0x7210 = 29200, matching E6).
-        // A window of 0 would cause the client to send 1-byte window probes
-        // instead of the full HTTP request, starving the relay.
-        WriteTcpHeader(packet, tcp, serverPort, clientPort, serverIsn, clientIsn + 1, 0x12, 0x7210);
+
+        // Advertise a reasonable window (0x7210 = 29200, matching E6). A window
+        // of 0 would cause the client to send 1-byte window probes instead of
+        // the full HTTP request, starving the relay. When scaling is negotiated
+        // this field is interpreted by the client as 0x7210 << 8.
+        WriteTcpHeader(packet, 20, serverPort, clientPort, serverIsn, clientIsn + 1, 0x12, 0x7210);
+        packet[20 + 12] = (byte)((tcpLen / 4) << 4); // data offset now covers options
+
+        var o = 20 + 20;
+        if (useMss)
+        {
+            packet[o] = 2; packet[o + 1] = 4;
+            packet[o + 2] = (byte)(mss >> 8); packet[o + 3] = (byte)mss;
+            o += 4;
+            if (!withWindowScale)
+            {
+                packet[o] = 1; packet[o + 1] = 1; packet[o + 2] = 1; // NOP padding
+                o += 3;
+            }
+        }
+        if (withWindowScale)
+        {
+            packet[o] = 3; packet[o + 1] = 3; packet[o + 2] = FerryWindowScaleShift;
+            o += 3;
+            packet[o] = 1; // NOP pad so the options end on a 4-byte boundary
+        }
         return packet;
     }
 
@@ -65,16 +111,14 @@ internal static class TcpPacketBuilder
         uint seq,
         uint ack,
         ReadOnlySpan<byte> payload,
+        ushort window = 0x7210,
         bool setFin = false)
     {
         int ipLen = 20, tcpLen = 20;
         var packet = new byte[ipLen + tcpLen + payload.Length];
         WriteIpHeader(packet, packet.Length, serverIp, clientIp);
-        // Advertise a reasonable window (0x7210 = 29200, matching E6). A window
-        // of 0 would tell the client the server cannot accept more data, which
-        // may cause the client to stall or reject the response.
         var flags = setFin ? (byte)0x19 : (byte)0x18; // FIN|PSH|ACK vs PSH|ACK
-        WriteTcpHeader(packet, ipLen, serverPort, clientPort, seq, ack, flags, 0x7210);
+        WriteTcpHeader(packet, ipLen, serverPort, clientPort, seq, ack, flags, window);
         payload.CopyTo(packet.AsSpan(ipLen + tcpLen));
         return packet;
     }
@@ -92,11 +136,12 @@ internal static class TcpPacketBuilder
         ushort serverPort,
         ushort clientPort,
         uint seq,
-        uint ack)
+        uint ack,
+        ushort window = 0x7210)
     {
         var packet = new byte[40];
         WriteIpHeader(packet, packet.Length, serverIp, clientIp);
-        WriteTcpHeader(packet, 20, serverPort, clientPort, seq, ack, 0x10, 0x7210);
+        WriteTcpHeader(packet, 20, serverPort, clientPort, seq, ack, 0x10, window);
         return packet;
     }
 
@@ -110,12 +155,13 @@ internal static class TcpPacketBuilder
         ushort serverPort,
         ushort clientPort,
         uint seq,
-        uint ack)
+        uint ack,
+        ushort window = 0x7210)
     {
         var packet = new byte[40];
         WriteIpHeader(packet, packet.Length, serverIp, clientIp);
         // FIN|ACK (0x11).
-        WriteTcpHeader(packet, 20, serverPort, clientPort, seq, ack, 0x11, 0x7210);
+        WriteTcpHeader(packet, 20, serverPort, clientPort, seq, ack, 0x11, window);
         return packet;
     }
 
