@@ -166,15 +166,16 @@ public sealed class Socks5Client : ISocks5Client
         var username = _proxy.Username ?? string.Empty;
         var password = _proxy.Password ?? string.Empty;
 
-        // RFC 1929: ULEN/PLEN are single octets (max 255). Truncate defensively
-        // so an overlong configured value cannot corrupt the wire format.
-        if (username.Length > 255)
-            username = username[..255];
-        if (password.Length > 255)
-            password = password[..255];
-
+        // RFC 1929: ULEN/PLEN are single octets, so UNAME/PASSWD are each at
+        // most 255 BYTES. Truncate by UTF-8 byte length (never split a
+        // multi-byte character) so an overlong configured value cannot corrupt
+        // the wire format.
         var ubytes = Encoding.UTF8.GetBytes(username);
         var pbytes = Encoding.UTF8.GetBytes(password);
+        if (ubytes.Length > 255)
+            ubytes = ubytes[..255];
+        if (pbytes.Length > 255)
+            pbytes = pbytes[..255];
 
         var request = new byte[1 + 1 + ubytes.Length + 1 + pbytes.Length];
         request[0] = AuthVersion;
@@ -287,30 +288,30 @@ public sealed class Socks5Client : ISocks5Client
         switch (atyp)
         {
             case AtypIpv4:
-            {
-                var buf = new byte[4];
-                await ReadExactAsync(stream, buf, callerToken, ct).ConfigureAwait(false);
-                var port = await ReadPortAsync(stream, callerToken, ct).ConfigureAwait(false);
-                return (new IPAddress(buf).ToString(), port);
-            }
+                {
+                    var buf = new byte[4];
+                    await ReadExactAsync(stream, buf, callerToken, ct).ConfigureAwait(false);
+                    var port = await ReadPortAsync(stream, callerToken, ct).ConfigureAwait(false);
+                    return (new IPAddress(buf).ToString(), port);
+                }
 
             case AtypIpv6:
-            {
-                var buf = new byte[16];
-                await ReadExactAsync(stream, buf, callerToken, ct).ConfigureAwait(false);
-                var port = await ReadPortAsync(stream, callerToken, ct).ConfigureAwait(false);
-                return (new IPAddress(buf).ToString(), port);
-            }
+                {
+                    var buf = new byte[16];
+                    await ReadExactAsync(stream, buf, callerToken, ct).ConfigureAwait(false);
+                    var port = await ReadPortAsync(stream, callerToken, ct).ConfigureAwait(false);
+                    return (new IPAddress(buf).ToString(), port);
+                }
 
             case AtypDomain:
-            {
-                var lenBuf = new byte[1];
-                await ReadExactAsync(stream, lenBuf, callerToken, ct).ConfigureAwait(false);
-                var buf = new byte[lenBuf[0]];
-                await ReadExactAsync(stream, buf, callerToken, ct).ConfigureAwait(false);
-                var port = await ReadPortAsync(stream, callerToken, ct).ConfigureAwait(false);
-                return (Encoding.ASCII.GetString(buf), port);
-            }
+                {
+                    var lenBuf = new byte[1];
+                    await ReadExactAsync(stream, lenBuf, callerToken, ct).ConfigureAwait(false);
+                    var buf = new byte[lenBuf[0]];
+                    await ReadExactAsync(stream, buf, callerToken, ct).ConfigureAwait(false);
+                    var port = await ReadPortAsync(stream, callerToken, ct).ConfigureAwait(false);
+                    return (Encoding.ASCII.GetString(buf), port);
+                }
 
             default:
                 throw new Socks5Exception($"Unsupported address type 0x{atyp:X2} in SOCKS5 reply.");

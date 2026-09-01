@@ -183,31 +183,31 @@ public sealed class Socks5TestServer : IDisposable
         switch (atyp)
         {
             case 0x01: // IPv4
-            {
-                var addr = new byte[4];
-                await ReadExactAsync(stream, addr, ct);
-                rawAddress = addr;
-                host = new IPAddress(addr).ToString();
-                break;
-            }
+                {
+                    var addr = new byte[4];
+                    await ReadExactAsync(stream, addr, ct);
+                    rawAddress = addr;
+                    host = new IPAddress(addr).ToString();
+                    break;
+                }
             case 0x03: // domain
-            {
-                var lenBuf = new byte[1];
-                await ReadExactAsync(stream, lenBuf, ct);
-                var name = new byte[lenBuf[0]];
-                await ReadExactAsync(stream, name, ct);
-                rawAddress = name;
-                host = Encoding.ASCII.GetString(name);
-                break;
-            }
+                {
+                    var lenBuf = new byte[1];
+                    await ReadExactAsync(stream, lenBuf, ct);
+                    var name = new byte[lenBuf[0]];
+                    await ReadExactAsync(stream, name, ct);
+                    rawAddress = name;
+                    host = Encoding.ASCII.GetString(name);
+                    break;
+                }
             case 0x04: // IPv6
-            {
-                var addr = new byte[16];
-                await ReadExactAsync(stream, addr, ct);
-                rawAddress = addr;
-                host = new IPAddress(addr).ToString();
-                break;
-            }
+                {
+                    var addr = new byte[16];
+                    await ReadExactAsync(stream, addr, ct);
+                    rawAddress = addr;
+                    host = new IPAddress(addr).ToString();
+                    break;
+                }
             default:
                 throw new InvalidDataException($"Unsupported ATYP 0x{atyp:X2}.");
         }

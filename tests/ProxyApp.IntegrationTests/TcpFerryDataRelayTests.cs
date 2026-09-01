@@ -22,8 +22,10 @@ public class TcpFerryDataRelayTests
     private static TcpFerry MakeFerry() =>
         new(new Socks5Client(new ProxyConfiguration
         {
-            Host = "127.0.0.1", Port = 1080,
-            AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+            Host = "127.0.0.1",
+            Port = 1080,
+            AuthenticationType = ProxyAuthenticationType.None,
+            Enabled = true
         }));
 
     /// <summary>
@@ -265,8 +267,9 @@ public class TcpFerryDataRelayTests
         // Phase 2 — CONNECT completes: flush writes the buffered bytes exactly
         // once and records them in BytesFlushedFromBuffer (NOT ClientBytesSent).
         var buffered = flow.DrainPendingBuffer();
+        Assert.NotNull(buffered);
         Assert.Equal(tls1, buffered);
-        await upstream.WriteAsync(buffered!);
+        await upstream.WriteAsync(buffered);
         flow.BytesFlushedFromBuffer += buffered.Length;
         flow.UpstreamStream = upstream;
         flow.Status = FlowStatus.Established;

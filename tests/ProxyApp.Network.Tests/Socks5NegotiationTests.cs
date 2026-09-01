@@ -151,8 +151,8 @@ public class Socks5NegotiationTests
     [Fact]
     public async Task ConnectToIpv6Destination_Succeeds()
     {
-        if (!Socket.OSSupportsIPv6)
-            return; // Environment without IPv6 support; skip quietly.
+        if (!Socket.OSSupportsIPv6 || !await Ipv6EchoServer.CanConnectToLoopbackAsync())
+            return; // Environment without usable IPv6 loopback; skip quietly.
 
         using var echo = new Ipv6EchoServer();
         using var server = new Socks5TestServer(async (request, stream, ct) =>

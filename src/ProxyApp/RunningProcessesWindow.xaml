@@ -1,0 +1,97 @@
+<Window x:Class="ProxyApp.RunningProcessesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="MyProxy — Running Processes" Height="640" Width="900"
+        MinHeight="420" MinWidth="640" WindowStartupLocation="CenterOwner"
+        FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True">
+    <Window.Resources>
+        <ResourceDictionary Source="/Themes/Modern.xaml"/>
+    </Window.Resources>
+
+    <Grid Background="{DynamicResource BgWindowBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Toolbar: search + refresh -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource CardBrush}"
+                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="16,10">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button x:Name="AddManualButton" Content="Add to Manual Rules" MinWidth="170"
+                            ToolTip="Add every checked process to the manual executable rules — closing this window without Add adds nothing"
+                            Click="OnAddToManualClicked"/>
+                    <Button x:Name="RefreshButton" Content="Refresh" MinWidth="96" Margin="8,0,0,0"
+                            ToolTip="Re-enumerate running processes"
+                            Click="OnRefreshClicked"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Style="{StaticResource SectionTitle}" Text="Running Processes"/>
+                    <TextBlock x:Name="CountText" Style="{StaticResource Hint}"
+                               VerticalAlignment="Center" Margin="12,2,0,0"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Filter row -->
+        <Grid Grid.Row="1" Margin="16,12,16,0">
+            <TextBox x:Name="SearchBox" MinHeight="32"
+                     TextChanged="OnSearchTextChanged"
+                     ToolTip="Filter by process name or path"/>
+        </Grid>
+
+        <!-- Process list. Checkboxes are a PENDING SELECTION ONLY: they bind the
+             shared ProcessRow instances but become routing rules solely through
+             the "Add to Manual Rules" button — closing the window without Add
+             discards the selection. Horizontal scrolling is disabled and the
+             PATH column is stretched by code-behind so long paths trim with an
+             ellipsis; clicking a path copies it. -->
+        <ListView x:Name="ProcessList" Grid.Row="2" Style="{StaticResource DataList}"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                  SizeChanged="OnProcessListSizeChanged"
+                  Margin="14,10,14,4">
+            <ListView.View>
+                <GridView AllowsColumnReorder="False">
+                    <GridViewColumn Header="PICK" Width="64">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding RouteViaProxy}"
+                                          ToolTip="Select this process — the rule is applied only when you click 'Add to Manual Rules'"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="PROCESS" Width="180">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding ProcessName}"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding ProcessName}"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="PID" Width="70"
+                                    DisplayMemberBinding="{Binding ProcessId}"/>
+                    <GridViewColumn x:Name="ProcessPathColumn" Header="PATH" Width="480">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding ProcessPath}"
+                                           TextTrimming="CharacterEllipsis"
+                                           Background="Transparent" Cursor="Hand"
+                                           ToolTip="{Binding ProcessPath}"
+                                           ToolTipService.InitialShowDelay="300"
+                                           MouseLeftButtonUp="OnCopyPathTextClicked"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+    </Grid>
+</Window>

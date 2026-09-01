@@ -4,205 +4,389 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="MyProxy" Height="720" Width="720" MinHeight="560" MinWidth="640">
-    <Grid Margin="12">
+        Title="MyProxy" Height="720" Width="720" MinHeight="560" MinWidth="640"
+        FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True"
+        PreviewKeyDown="OnWindowPreviewKeyDown">
+    <Window.Resources>
+        <ResourceDictionary Source="/Themes/Modern.xaml"/>
+    </Window.Resources>
+
+    <!-- Root: tabbed workspace + persistent bottom action bar -->
+    <Grid Background="{DynamicResource BgWindowBrush}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- SOCKS5 Proxy configuration -->
-        <GroupBox Grid.Row="0" Header="SOCKS5 Proxy" Padding="8" Margin="0,0,0,8">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
+        <TabControl x:Name="MainTabs" Grid.Row="0" Style="{StaticResource FlatTabs}"
+                    Margin="14,10,14,0">
 
-                <TextBlock Grid.Row="0" Grid.Column="0" Text="Host:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <TextBox x:Name="ProxyHostBox" Grid.Row="0" Grid.Column="1" Margin="0,0,12,4"/>
-
-                <TextBlock Grid.Row="0" Grid.Column="2" Text="Port:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <TextBox x:Name="ProxyPortBox" Grid.Row="0" Grid.Column="3" Margin="0,0,0,4" Text="1080"/>
-
-                <TextBlock Grid.Row="1" Grid.Column="0" Text="Username:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <TextBox x:Name="ProxyUsernameBox" Grid.Row="1" Grid.Column="1" Margin="0,0,12,0"/>
-
-                <TextBlock Grid.Row="1" Grid.Column="2" Text="Password:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <PasswordBox x:Name="ProxyPasswordBox" Grid.Row="1" Grid.Column="3"/>
-            </Grid>
-        </GroupBox>
-
-        <!-- Applications / rules -->
-        <GroupBox Grid.Row="1" Header="Applications" Padding="8" Margin="0,0,0,8">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
-
-                <!-- Search + actions row -->
-                <Grid Grid.Row="0" Margin="0,0,0,6">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBox x:Name="SearchBox" Grid.Column="0" TextChanged="OnSearchTextChanged"
-                             ToolTip="Filter by process name, path, or bundle name"/>
-                    <StackPanel Grid.Column="1" Orientation="Horizontal">
-                        <Button x:Name="AddExeButton" Content="Add EXE..." Margin="6,0,0,0" Padding="10,2" Click="OnAddExeClicked"/>
-                        <Button x:Name="AddFolderButton" Content="Add Folder..." Margin="6,0,0,0" Padding="10,2" Click="OnAddFolderClicked"/>
-                        <Button x:Name="RefreshButton" Content="Refresh" Margin="6,0,0,0" Padding="10,2" Click="OnRefreshClicked"/>
-                    </StackPanel>
-                </Grid>
-
-                <TextBlock Grid.Row="1" Text="Select applications to route. Leave unchecked for Direct."
-                           VerticalAlignment="Center" Margin="0,0,0,4" Foreground="Gray"/>
-
-                <!-- Unified scrollable rules area: process rows + manual rules + bundles -->
-                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" MaxHeight="340">
+            <!-- ═══ TAB: PROXIES ═══ -->
+            <TabItem Header="Proxies">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
-                        <!-- Running processes -->
-                        <TextBlock Text="Running processes" FontWeight="SemiBold" Margin="0,2,0,2"/>
-                        <ListView x:Name="ProcessList" Height="160" BorderThickness="1">
-                            <ListView.View>
-                                <GridView>
-                                    <GridViewColumn Header="Route" Width="70">
-                                        <GridViewColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <CheckBox IsChecked="{Binding RouteViaProxy}"
-                                                          ToolTip="Route through the SOCKS5 proxy"/>
-                                            </DataTemplate>
-                                        </GridViewColumn.CellTemplate>
-                                    </GridViewColumn>
-                                    <GridViewColumn Header="Process" Width="180"
-                                                    DisplayMemberBinding="{Binding ProcessName}"/>
-                                    <GridViewColumn Header="Path" Width="300"
-                                                    DisplayMemberBinding="{Binding ProcessPath}"/>
-                                </GridView>
-                            </ListView.View>
-                        </ListView>
+                        <Border Style="{DynamicResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="SOCKS5 proxy profiles"/>
 
-                        <!-- Manual exe rules -->
-                        <TextBlock Text="Manual rules" FontWeight="SemiBold" Margin="0,8,0,2"/>
-                        <ListView x:Name="ManualRuleList" Height="Auto" MaxHeight="140" BorderThickness="1"
-                                  ItemsSource="{Binding}">
-                            <ListView.View>
-                                <GridView>
-                                    <GridViewColumn Header="Route" Width="70">
-                                        <GridViewColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <CheckBox IsChecked="{Binding Enabled}"
-                                                          ToolTip="Route through the SOCKS5 proxy"/>
-                                            </DataTemplate>
-                                        </GridViewColumn.CellTemplate>
-                                    </GridViewColumn>
-                                    <GridViewColumn Header="Executable" Width="200"
-                                                    DisplayMemberBinding="{Binding ExecutableName}"/>
-                                    <GridViewColumn Header="Path" Width="280"
-                                                    DisplayMemberBinding="{Binding ExecutablePath}"/>
-                                    <GridViewColumn Header="" Width="40">
-                                        <GridViewColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <Button Content="✕" FontSize="10" Padding="4,0"
-                                                        Click="OnRemoveManualRuleClicked"
-                                                        Tag="{Binding}"/>
-                                            </DataTemplate>
-                                        </GridViewColumn.CellTemplate>
-                                    </GridViewColumn>
-                                </GridView>
-                            </ListView.View>
-                        </ListView>
+                                <!-- Top row: create/import + list-wide actions
+                                     (all list actions live here so every card
+                                     stays clean: Edit / Share / Delete only). -->
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                    <Button x:Name="NewProxyButton" Content="New…"
+                                            ToolTip="Create a new proxy profile"
+                                            Click="OnNewProxyClicked"/>
+                                    <Button x:Name="PasteProxyButton" Content="Paste Config" Margin="6,0,0,0"
+                                            ToolTip="Paste a socks5:// URL from the clipboard (Ctrl+V) — socks5://host:port or socks5://user:pass@host:port (user/pass optional)"
+                                            Click="OnPasteConfigClicked"/>
+                                    <Button x:Name="PingAllButton" Content="Test Ping" Margin="14,0,0,0"
+                                            ToolTip="Real ping: SOCKS5 handshake + CONNECT through every profile (5 s timeout each)"
+                                            Click="OnTestPingClicked"/>
+                                    <Button x:Name="SortByPingButton" Content="Sort: Fastest" Margin="6,0,0,0"
+                                            ToolTip="Order profiles by last ping — fastest first (untested and failed last)"
+                                            Click="OnSortByPingClicked"/>
+                                    <Button x:Name="DeleteAllProxyButton" Content="Delete All" Margin="6,0,0,0"
+                                            ToolTip="Delete every saved profile (asks for confirmation)"
+                                            Click="OnDeleteAllProxiesClicked"/>
+                                    <Button x:Name="RestartServicesButton" Content="Restart" Margin="6,0,0,0"
+                                            ToolTip="Restart services: stop the engine if running, then start it again with the selected profile"
+                                            Click="OnRestartServicesClicked"/>
+                                </StackPanel>
 
-                        <!-- Folder bundles -->
-                        <TextBlock Text="Folder bundles" FontWeight="SemiBold" Margin="0,8,0,2"/>
+                                <!-- Profile cards (v2rayNG-style): config name on
+                                     top, host:port underneath, auth line below
+                                     that, ping spot on the right, and per-card
+                                     Edit / Share / Delete. Click a card body to
+                                     make it the profile START routes through. -->
+                                <ItemsControl x:Name="ProfileCardList">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Tag="{Binding}"
+                                                    MouseLeftButtonUp="OnProxyCardClicked">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
+                                                        <Setter Property="BorderBrush" Value="{DynamicResource BorderSubtleBrush}"/>
+                                                        <Setter Property="BorderThickness" Value="1"/>
+                                                        <Setter Property="CornerRadius" Value="8"/>
+                                                        <Setter Property="Padding" Value="12,10,10,10"/>
+                                                        <Setter Property="Margin" Value="0,0,0,8"/>
+                                                        <Setter Property="Cursor" Value="Hand"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                                <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                                                                <Setter Property="Background" Value="{DynamicResource TabSelectedBrush}"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <!-- Line 1: config name (semibold);
+                                                         line 2: host : port (normal);
+                                                         line 3: protocol/auth (italic). -->
+                                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding Config.Name}"
+                                                                   FontSize="13" FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                                   TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Text="{Binding EndpointDisplay}"
+                                                                   FontSize="11" FontWeight="Normal"
+                                                                   Margin="0,3,0,0"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                   TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Text="{Binding DetailsDisplay}"
+                                                                   FontSize="10.5" FontWeight="Normal" FontStyle="Italic"
+                                                                   Margin="0,2,0,0"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                                    </StackPanel>
+
+                                                    <!-- Ping spot: last real-ping result
+                                                         (tooltip = full outcome text). -->
+                                                    <TextBlock Grid.Column="1" VerticalAlignment="Center"
+                                                               Margin="10,0,6,0"
+                                                               FontSize="11.5" FontWeight="SemiBold"
+                                                               Text="{Binding PingDisplay}">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="TextBlock">
+                                                                <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
+                                                                <Setter Property="ToolTip" Value="{Binding PingDetails}"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding PingDetails}" Value="">
+                                                                        <Setter Property="ToolTip" Value="{x:Null}"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding PingTone}" Value="Good">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding PingTone}" Value="Slow">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource WarningBrush}"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding PingTone}" Value="Bad">
+                                                                        <Setter Property="Foreground" Value="{DynamicResource DangerBrush}"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+
+                                                    <!-- Per-card actions (Edit / Share / Delete). -->
+                                                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <Button Content="Edit" Padding="8,2" MinHeight="24" FontSize="11"
+                                                                ToolTip="Edit this profile"
+                                                                Tag="{Binding}" Click="OnEditProxyClicked"/>
+                                                        <Button Content="Share" Padding="8,2" MinHeight="24" FontSize="11" Margin="4,0,0,0"
+                                                                ToolTip="Copy this profile as a socks5:// URL (includes credentials — paste it into Paste Config on another machine)"
+                                                                Tag="{Binding}" Click="OnShareProxyClicked"/>
+                                                        <Button Content="Delete" Padding="8,2" MinHeight="24" FontSize="11" Margin="4,0,0,0"
+                                                                ToolTip="Delete this profile"
+                                                                Tag="{Binding}" Click="OnDeleteProxyClicked"/>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <TextBlock x:Name="EmptyProxyHint" Style="{StaticResource Hint}" Margin="0,4,0,2" TextWrapping="Wrap"
+                                           Text="No proxy profiles yet — use New… or Paste Config."/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ═══ TAB: APP RULES ═══ -->
+            <TabItem Header="App Rules">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="Routing rules"/>
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,10"
+                                           Text="Assign applications to the tunnel. Running-process selections are managed in the picker; manual exe rules and folder bundles are managed here."/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <Button x:Name="AddProcessesButton" Content="Add Running Processes…"
+                                            Style="{DynamicResource AccentButton}" MinWidth="200" MinHeight="32"
+                                            ToolTip="Open the running-processes picker"
+                                            Click="OnOpenProcessesClicked"/>
+                                    <Button x:Name="AddExeButton" Content="Add EXE…" MinHeight="32"
+                                            Margin="8,0,0,0" Click="OnAddExeClicked"/>
+                                    <Button x:Name="AddFolderButton" Content="Add Folder…" MinHeight="32"
+                                            Margin="8,0,0,0" Click="OnAddFolderClicked"/>
+                                </StackPanel>
+
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="Manual executable rules" Margin="0,18,0,10"/>
+                                <!-- Horizontal scrolling is disabled and the PATH
+                                     column is stretched by code-behind, so long paths
+                                     trim with an ellipsis and the ✕ button always stays
+                                     reachable. Clicking a path copies it. -->
+                                <Grid>
+                                <ListView x:Name="ManualRuleList" MinHeight="72" Style="{StaticResource DataList}"
+                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                          SizeChanged="OnManualRuleListSizeChanged">
+                                    <ListView.View>
+                                        <GridView AllowsColumnReorder="False">
+                                            <GridViewColumn Header="ROUTE" Width="64">
+                                                <GridViewColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <CheckBox IsChecked="{Binding Enabled}"
+                                                                  ToolTip="Route through the SOCKS5 proxy"/>
+                                                    </DataTemplate>
+                                                </GridViewColumn.CellTemplate>
+                                            </GridViewColumn>
+                                            <GridViewColumn Header="EXECUTABLE" Width="180">
+                                                <GridViewColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Text="{Binding ExecutableName}"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   ToolTip="{Binding ExecutableName}"/>
+                                                    </DataTemplate>
+                                                </GridViewColumn.CellTemplate>
+                                            </GridViewColumn>
+                                            <GridViewColumn x:Name="ManualRulePathColumn" Header="PATH" Width="360">
+                                                <GridViewColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Text="{Binding PathDisplay}"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   Background="Transparent" Cursor="Hand"
+                                                                   ToolTip="{Binding PathToolTip}"
+                                                                   ToolTipService.InitialShowDelay="300"
+                                                                   MouseLeftButtonUp="OnCopyPathTextClicked"/>
+                                                    </DataTemplate>
+                                                </GridViewColumn.CellTemplate>
+                                            </GridViewColumn>
+                                            <GridViewColumn Header="" Width="44">
+                                                <GridViewColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <Button Content="✕" FontSize="10" Padding="4,0"
+                                                                Click="OnRemoveManualRuleClicked"
+                                                                Tag="{Binding}"/>
+                                                    </DataTemplate>
+                                                </GridViewColumn.CellTemplate>
+                                            </GridViewColumn>
+                                        </GridView>
+                                    </ListView.View>
+                                </ListView>
+
+                                <!-- Empty-state hint: visible while the manual rules
+                                     list has no rows. Sits on the list's second row
+                                     line instead of dead-center. -->
+                                <TextBlock x:Name="EmptyRulesHint"
+                                           HorizontalAlignment="Center" VerticalAlignment="Top"
+                                           Margin="0,40,0,0"
+                                           Style="{StaticResource Hint}" TextAlignment="Center"
+                                           Visibility="Collapsed"
+                                           Text="The rules list is empty — add running processes, an EXE, or a folder bundle above."/>
+                                </Grid>
+
+                                <!-- Hidden while there are no bundles — with the
+                                     chips list empty the whole section collapses. -->
+                                <StackPanel x:Name="BundleHeaderPanel" Orientation="Horizontal"
+                                            Margin="0,18,0,6" Visibility="Collapsed">
+                                    <TextBlock Style="{StaticResource SectionTitle}"
+                                               Text="Folder bundles"/>
+                                    <TextBlock Style="{StaticResource Hint}"
+                                               VerticalAlignment="Center" Margin="10,1,0,0"
+                                               Text="Shift+click a bundle to open its details"/>
+                                </StackPanel>
                         <ItemsControl x:Name="BundleList">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Columns="4"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Expander Header="{Binding DisplayName}" Margin="0,0,0,4">
-                                        <StackPanel Margin="16,4,0,4">
-                                            <TextBlock Text="{Binding FolderPath}" Foreground="Gray" TextWrapping="Wrap"/>
-                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                                <CheckBox Content="Enabled" IsChecked="{Binding Enabled}" VerticalAlignment="Center"/>
-                                                <ComboBox SelectedIndex="{Binding ModeIndex}" Width="90" Margin="8,0,0,0">
-                                                    <ComboBoxItem Content="Proxy"/>
-                                                    <ComboBoxItem Content="Direct"/>
-                                                </ComboBox>
-                                                <Button Content="✕" FontSize="10" Padding="4,0" Margin="8,0,0,0"
+                                    <Border x:Name="ChipRoot"
+                                            Style="{StaticResource BundleChip}"
+                                            MouseLeftButtonUp="OnBundleChipClicked"
+                                            ToolTip="Click: enable / disable — Shift+click: details">
+                                        <Grid>
+                                            <TextBlock Text="{Binding DisplayName}"
+                                                       VerticalAlignment="Center"
+                                                       HorizontalAlignment="Left"
+                                                       FontSize="11"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding FolderPath}">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground"
+                                                                Value="{DynamicResource TextPrimaryBrush}"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Enabled}" Value="False">
+                                                                <Setter Property="Foreground"
+                                                                        Value="{DynamicResource TextSecondaryBrush}"/>
+                                                                <Setter Property="TextDecorations"
+                                                                        Value="Strikethrough"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+
+                                            <StackPanel x:Name="ChipTools" Orientation="Horizontal"
+                                                        HorizontalAlignment="Right" VerticalAlignment="Top"
+                                                        Margin="0,3,3,0"
+                                                        Visibility="Hidden" Background="Transparent">
+                                                <Button Style="{StaticResource ChipIcon}" Content="✕"
+                                                        FontSize="9"
+                                                        ToolTip="Remove this bundle"
                                                         Click="OnRemoveBundleClicked" Tag="{Binding}"/>
                                             </StackPanel>
-                                            <TextBlock Text="Executables (matched by folder at connect time):"
-                                                       FontSize="11" Foreground="Gray" Margin="0,6,0,2"/>
-                                            <ItemsControl ItemsSource="{Binding Exes}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <TextBlock Text="{Binding}" FontSize="11" Margin="8,0,0,0"/>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </StackPanel>
-                                    </Expander>
+                                        </Grid>
+                                    </Border>
+                                    <DataTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="ChipTools" Property="Visibility"
+                                                    Value="Visible"/>
+                                        </Trigger>
+                                        <DataTrigger Binding="{Binding Enabled}" Value="False">
+                                            <Setter TargetName="ChipRoot" Property="Opacity"
+                                                    Value="0.55"/>
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
-            </Grid>
-        </GroupBox>
+            </TabItem>
 
-        <!-- Status + controls -->
-        <TextBlock x:Name="StatusText" Grid.Row="3" Margin="0,4,0,8" TextWrapping="Wrap"
-                   Text="Status: Stopped" Foreground="Gray"/>
+            <!-- ═══ TAB: SETTINGS ═══ -->
+            <TabItem Header="Settings">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel MaxWidth="640" HorizontalAlignment="Left">
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="Appearance"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="Theme:"
+                                               Style="{StaticResource FieldLabel}" Margin="0,0,8,0"/>
+                                    <ComboBox x:Name="ThemeCombo" Width="110"
+                                              SelectionChanged="OnThemeChanged">
+                                        <ComboBoxItem Content="System"/>
+                                        <ComboBoxItem Content="Light"/>
+                                        <ComboBoxItem Content="Dark"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <TextBlock Style="{StaticResource Hint}"
+                                           Text="&quot;System&quot; follows the Windows personalization setting at the next launch."/>
+                            </StackPanel>
+                        </Border>
 
-        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="DebugButton" Content="Debug" Padding="16,4" Margin="0,0,8,0"
-                    Click="OnDebugClicked"/>
-            <Button x:Name="StartButton" Content="START" Padding="16,4" Margin="0,0,8,0"
-                    IsDefault="True" Click="OnStartClicked"/>
-            <Button x:Name="StopButton" Content="STOP" Padding="16,4" IsEnabled="False"
-                    Click="OnStopClicked"/>
-        </StackPanel>
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="Automation"/>
+                                <CheckBox x:Name="TestOnSaveCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                          Content="Test proxy on save"
+                                          Checked="OnTestPrefChanged" Unchecked="OnTestPrefChanged"/>
+                                <TextBlock Style="{StaticResource Hint}"
+                                           Text="Runs a SOCKS5 handshake + CONNECT test after a profile is added or edited. Also available via the profile editor's Test button."/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
 
-        <!-- Debug / Logs panel: bounded, near-real-time ferry events.
-             The engine trace sink appends here; the log survives Refresh and
-             is non-blocking (bounded ring buffer + batched UI drain). -->
-        <Expander Grid.Row="4" Margin="0,12,0,0" Header="Debug / Logs" IsExpanded="True">
-            <Grid Margin="0,8,0,0">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
-                    <Button Content="Copy log" Padding="10,2" Margin="0,0,6,0" Click="OnCopyLogClicked"/>
-                    <Button Content="Clear" Padding="10,2" Click="OnClearLogClicked"/>
-                    <TextBlock Text="(bounded: last 2000 lines)" Foreground="Gray" Margin="8,0,0,0"
-                               VerticalAlignment="Center"/>
+        <!-- Persistent bottom action bar (engine controls visible on every tab) -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource CardBrush}"
+                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="16,10,16,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="StatusText" Grid.Column="0" VerticalAlignment="Center"
+                           TextWrapping="Wrap" Text="Status: Stopped"
+                           Foreground="{DynamicResource TextSecondaryBrush}"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="DebugButton" Content="Debug" MinWidth="84" Margin="0,0,8,0"
+                            ToolTip="Open the session debug log window (complete history since launch)"
+                            Click="OnDebugClicked"/>
+                    <ToggleButton x:Name="EngineToggleButton"
+                                  Style="{DynamicResource StateToggleButton}"
+                                  ToolTip="Start or stop the tunnel engine"
+                                  Checked="OnEngineToggleChecked"
+                                  Unchecked="OnEngineToggleUnchecked"/>
                 </StackPanel>
-                <ListView x:Name="DebugLogList" Grid.Row="1" Height="180" BorderThickness="1"
-                          VirtualizingPanel.IsVirtualizing="True"
-                          VirtualizingPanel.VirtualizationMode="Recycling">
-                    <ListView.View>
-                        <GridView>
-                            <GridViewColumn Header="Time" Width="80"
-                                            DisplayMemberBinding="{Binding Timestamp}"/>
-                            <GridViewColumn Header="Level" Width="50"
-                                            DisplayMemberBinding="{Binding Level}"/>
-                            <GridViewColumn Header="Message" Width="540"
-                                            DisplayMemberBinding="{Binding Message}"/>
-                        </GridView>
-                    </ListView.View>
-                </ListView>
             </Grid>
-        </Expander>
+        </Border>
     </Grid>
 </Window>

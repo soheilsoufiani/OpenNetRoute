@@ -16,14 +16,14 @@ public class Socks5AuthenticationTests
         int port,
         string? username,
         string? password) => new()
-    {
-        Host = "127.0.0.1",
-        Port = port,
-        AuthenticationType = ProxyAuthenticationType.UsernamePassword,
-        Username = username,
-        Password = password,
-        Enabled = true
-    };
+        {
+            Host = "127.0.0.1",
+            Port = port,
+            AuthenticationType = ProxyAuthenticationType.UsernamePassword,
+            Username = username,
+            Password = password,
+            Enabled = true
+        };
 
     [Fact]
     public async Task ValidCredentials_Authenticate_AndConnect()
@@ -172,12 +172,12 @@ public class Socks5AuthenticationTests
                     await Socks5TestServer.ReadExactAsync(stream, new byte[4], cts.Token); // IPv4
                     break;
                 case 0x03:
-                {
-                    var len = new byte[1];
-                    await Socks5TestServer.ReadExactAsync(stream, len, cts.Token);
-                    await Socks5TestServer.ReadExactAsync(stream, new byte[len[0]], cts.Token); // domain
-                    break;
-                }
+                    {
+                        var len = new byte[1];
+                        await Socks5TestServer.ReadExactAsync(stream, len, cts.Token);
+                        await Socks5TestServer.ReadExactAsync(stream, new byte[len[0]], cts.Token); // domain
+                        break;
+                    }
                 case 0x04:
                     await Socks5TestServer.ReadExactAsync(stream, new byte[16], cts.Token); // IPv6
                     break;

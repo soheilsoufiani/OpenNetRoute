@@ -313,8 +313,10 @@ public class TcpFerryEndToEndTests
         var ferry = new TcpFerry(
             new Socks5Client(new ProxyConfiguration
             {
-                Host = "127.0.0.1", Port = proxy.Port,
-                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+                Host = "127.0.0.1",
+                Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None,
+                Enabled = true
             }),
             new ProcessTable(),
             rules,
@@ -419,8 +421,10 @@ public class TcpFerryEndToEndTests
         var ferry = new TcpFerry(
             new Socks5Client(new ProxyConfiguration
             {
-                Host = "127.0.0.1", Port = proxy.Port,
-                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+                Host = "127.0.0.1",
+                Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None,
+                Enabled = true
             }),
             new ProcessTable(),
             rules,
@@ -545,8 +549,10 @@ public class TcpFerryEndToEndTests
         var ferry = new TcpFerry(
             new Socks5Client(new ProxyConfiguration
             {
-                Host = "127.0.0.1", Port = proxy.Port,
-                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+                Host = "127.0.0.1",
+                Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None,
+                Enabled = true
             }),
             new ProcessTable(),
             rules,
@@ -660,8 +666,10 @@ public class TcpFerryEndToEndTests
         var ferry = new TcpFerry(
             new Socks5Client(new ProxyConfiguration
             {
-                Host = "127.0.0.1", Port = proxy.Port,
-                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+                Host = "127.0.0.1",
+                Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None,
+                Enabled = true
             }),
             new ProcessTable(),
             rules,
@@ -809,8 +817,10 @@ public class TcpFerryEndToEndTests
         var ferry = new TcpFerry(
             new Socks5Client(new ProxyConfiguration
             {
-                Host = "127.0.0.1", Port = proxy.Port,
-                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+                Host = "127.0.0.1",
+                Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None,
+                Enabled = true
             }),
             new ProcessTable(),
             rules,
@@ -959,8 +969,10 @@ public class TcpFerryEndToEndTests
         var ferry = new TcpFerry(
             new Socks5Client(new ProxyConfiguration
             {
-                Host = "127.0.0.1", Port = proxy.Port,
-                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+                Host = "127.0.0.1",
+                Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None,
+                Enabled = true
             }),
             new ProcessTable(),
             rules,
@@ -1052,8 +1064,10 @@ public class TcpFerryEndToEndTests
         var ferry = new TcpFerry(
             new Socks5Client(new ProxyConfiguration
             {
-                Host = "127.0.0.1", Port = proxy.Port,
-                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+                Host = "127.0.0.1",
+                Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None,
+                Enabled = true
             }),
             new ProcessTable(),
             rules,
@@ -1159,8 +1173,10 @@ public class TcpFerryEndToEndTests
         var ferry = new TcpFerry(
             new Socks5Client(new ProxyConfiguration
             {
-                Host = "127.0.0.1", Port = proxy.Port,
-                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+                Host = "127.0.0.1",
+                Port = proxy.Port,
+                AuthenticationType = ProxyAuthenticationType.None,
+                Enabled = true
             }),
             new ProcessTable(),
             rules,

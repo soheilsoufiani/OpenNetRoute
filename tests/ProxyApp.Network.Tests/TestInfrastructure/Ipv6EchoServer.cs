@@ -27,6 +27,41 @@ public sealed class Ipv6EchoServer : IDisposable
     /// <summary>The IPv6 loopback port the echo server is listening on.</summary>
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
 
+    /// <summary>
+    /// Verifies the OS can actually COMPLETE TCP connections on the IPv6
+    /// loopback interface within a short budget. <see cref="Socket.OSSupportsIPv6"/>
+    /// only proves the protocol stack is loaded: some environments report true
+    /// yet silently DROP connects to ::1 (security software / VPN virtual
+    /// adapters), which previously surfaced downstream as an opaque
+    /// "server closed the connection" instead of a clean environmental skip.
+    /// </summary>
+    public static async Task<bool> CanConnectToLoopbackAsync(CancellationToken ct = default)
+    {
+        if (!Socket.OSSupportsIPv6)
+            return false;
+
+        try
+        {
+            using var listener = new TcpListener(IPAddress.IPv6Loopback, 0);
+            listener.Start();
+
+            using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            probeCts.CancelAfter(TimeSpan.FromSeconds(3));
+
+            using var client = new TcpClient(AddressFamily.InterNetworkV6);
+            await client.ConnectAsync(
+                IPAddress.IPv6Loopback,
+                ((IPEndPoint)listener.LocalEndpoint).Port,
+                probeCts.Token);
+            return true;
+        }
+        catch (Exception)
+        {
+            // IPv6 stack present but ::1 is not reachable in practice.
+            return false;
+        }
+    }
+
     private async Task AcceptLoopAsync(CancellationToken ct)
     {
         try

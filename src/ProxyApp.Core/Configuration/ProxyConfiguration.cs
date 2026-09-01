@@ -10,6 +10,15 @@ namespace ProxyApp.Core.Configuration;
 public sealed class ProxyConfiguration
 {
     /// <summary>
+    /// The user-facing profile name (e.g. "Home VPS"). Optional — the UI falls
+    /// back to "host:port" when blank.
+    /// </summary>
+    public string? Name { get; set; }
+
+    /// <summary>The proxy protocol. Only <see cref="ProxyProtocol.Socks5"/> exists today.</summary>
+    public ProxyProtocol Protocol { get; set; } = ProxyProtocol.Socks5;
+
+    /// <summary>
     /// The proxy server host. An IPv4 address, an IPv6 address, or a host name.
     /// </summary>
     public string? Host { get; set; }
@@ -30,7 +39,11 @@ public sealed class ProxyConfiguration
     /// The SOCKS5 username/password method (RFC 1929) permits an empty password,
     /// so this may be empty even when authentication is enabled.
     /// Ignored when <see cref="AuthenticationType"/> is <see cref="ProxyAuthenticationType.None"/>.
+    /// Persisted DPAPI-protected at rest (only this property is protected — a
+    /// global converter would also encrypt innocuous fields like the name/host).
     /// </summary>
+    [System.Text.Json.Serialization.JsonConverter(
+        typeof(Persistence.ProtectedStringJsonConverter))]
     public string? Password { get; set; }
 
     /// <summary>

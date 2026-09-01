@@ -31,6 +31,9 @@ public static class ConfigurationValidator
     /// <summary>Maximum length of a password accepted by validation.</summary>
     public const int MaxPasswordLength = 255;
 
+    /// <summary>Maximum length of a proxy profile name.</summary>
+    public const int MaxProxyNameLength = 100;
+
     /// <summary>Maximum length of an executable name accepted by validation.</summary>
     public const int MaxExecutableNameLength = 255;
 
@@ -46,13 +49,31 @@ public static class ConfigurationValidator
     };
 
     /// <summary>
+    /// Returns true when the host may never be used as a proxy endpoint: the
+    /// unroutable all-zeros addresses and the local machine's loopback NAME.
+    /// Numeric loopback IPs (e.g. 127.0.0.1, ::1) are deliberately allowed —
+    /// pointing at a local proxy (v2ray/Xray inbound) is a supported scenario,
+    /// and the ferry's capture filter ("... and not loopback") never intercepts
+    /// loopback traffic, so no interception loop is possible.
+    /// </summary>
+    public static bool IsForbiddenHost(string? host) =>
+        host is not null && ForbiddenHostValues.Contains(host);
+
+    /// <summary>
     /// Validates a <see cref="ProxyConfiguration"/>.
     /// </summary>
     public static ValidationResult Validate(ProxyConfiguration proxy)
     {
         ArgumentNullException.ThrowIfNull(proxy);
-
         var errors = new List<string>();
+
+        var nameErrors = ValidateProxyName(proxy.Name);
+        if (nameErrors is not null)
+            errors.Add(nameErrors);
+
+        if (!Enum.IsDefined(proxy.Protocol))
+            errors.Add($"Proxy protocol '{proxy.Protocol}' is not supported.");
+
         var hostErrors = ValidateHost(proxy.Host);
         if (hostErrors is not null)
             errors.Add(hostErrors);
@@ -137,6 +158,40 @@ public static class ConfigurationValidator
         var ruleErrors = ValidateRules(settings.Rules);
         errors.AddRange(ruleErrors.Errors);
 
+        // ── Saved proxy profiles ──
+        var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < settings.Proxies.Count; i++)
+        {
+            var profile = settings.Proxies[i];
+            if (profile is null)
+            {
+                errors.Add($"Saved proxy at index {i} is null.");
+                continue;
+            }
+
+            var profileErrors = Validate(profile);
+            if (!profileErrors.IsValid)
+                errors.AddRange(profileErrors.Errors.Select(e => $"Proxy '{profile.Name ?? $"#{i}"}': {e}"));
+
+            if (string.IsNullOrWhiteSpace(profile.Name))
+            {
+                errors.Add($"Saved proxy at index {i} must have a name to be selectable.");
+            }
+            else if (!seenNames.Add(profile.Name))
+            {
+                errors.Add($"Duplicate proxy name '{profile.Name}'.");
+            }
+        }
+
+        if (!string.IsNullOrEmpty(settings.SelectedProxyName) &&
+            !settings.Proxies.Any(p => p is not null &&
+                string.Equals(p.Name, settings.SelectedProxyName, StringComparison.OrdinalIgnoreCase)))
+        {
+            errors.Add($"Selected proxy '{settings.SelectedProxyName}' does not match any saved proxy.");
+        }
+
+        errors.AddRange(ValidatePreferences(settings.Preferences));
+
         if (!Enum.IsDefined(settings.LogLevel))
             errors.Add($"Log level '{settings.LogLevel}' is not supported.");
 
@@ -206,6 +261,39 @@ public static class ConfigurationValidator
             : ValidationResult.Fail(errors.ToArray());
     }
 
+    private static string? ValidateProxyName(string? name)
+    {
+        if (name is null || name.Length == 0)
+            return null; // optional — the UI falls back to host:port
+
+        if (name.Length > MaxProxyNameLength)
+            return $"Proxy name must not exceed {MaxProxyNameLength} characters.";
+
+        if (name.IndexOf('\0') >= 0)
+            return "Proxy name must not contain a null character.";
+
+        return null;
+    }
+
+    private static IEnumerable<string> ValidatePreferences(UiPreferences? preferences)
+    {
+        if (preferences is null)
+        {
+            yield break; // defaults apply when absent
+        }
+
+        if (!Enum.IsDefined(preferences.Theme))
+            yield return $"Theme '{preferences.Theme}' is not supported.";
+
+        if (!string.IsNullOrEmpty(preferences.AccentColorHex) &&
+            !System.Text.RegularExpressions.Regex.IsMatch(
+                preferences.AccentColorHex,
+                @"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"))
+        {
+            yield return $"Accent color '{preferences.AccentColorHex}' is not a valid #RRGGBB hex value.";
+        }
+    }
+
     private static string? ValidateHost(string? host)
     {
         if (string.IsNullOrWhiteSpace(host))
@@ -214,7 +302,7 @@ public static class ConfigurationValidator
         if (host.Length > MaxHostLength)
             return $"Proxy host must not exceed {MaxHostLength} characters.";
 
-        if (ForbiddenHostValues.Contains(host))
+        if (IsForbiddenHost(host))
             return $"'{host}' is not a valid proxy host.";
 
         if (IPAddress.TryParse(host, out var address))

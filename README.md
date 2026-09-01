@@ -71,6 +71,27 @@ application will detect and clearly report insufficient permissions rather than
 fail silently. It will avoid requesting elevation for functionality that does not
 need it (configuration, process enumeration, the SOCKS5 client).
 
+## Settings storage & credentials
+
+All settings (proxy profiles, selected profile, application rules, tunnel
+assignments, theme/accent, connection-test preference, window placement) are
+persisted as JSON to:
+
+```
+%APPDATA%\MyProxy\settings.json
+```
+
+- Writes are **atomic** (temp file + replace); a crash mid-save cannot corrupt
+  the file. A damaged file is quarantined (`*.corrupt-*`) and the app starts
+  with defaults — data stays recoverable by hand.
+- Proxy **passwords are encrypted at rest with Windows DPAPI**
+  (`CurrentUser` scope): only the same Windows user account can decrypt them,
+  and no plaintext password ever touches disk or log output. Log lines show a
+  masked URI (`socks5://user:***@host:port`).
+- The full state is flushed on close; edits during the session are saved
+  incrementally (immediately for structural changes such as adding or deleting
+  a profile, debounced while typing).
+
 ## Current development status
 
 The repository is in **Phase 2** of the development plan in `CLAUDE.md`:

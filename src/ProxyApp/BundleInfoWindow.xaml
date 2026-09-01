@@ -1,0 +1,99 @@
+<Window x:Class="ProxyApp.BundleInfoWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Folder bundle" Height="540" Width="640"
+        MinHeight="380" MinWidth="480" WindowStartupLocation="CenterOwner"
+        FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True">
+    <Window.Resources>
+        <ResourceDictionary Source="/Themes/Modern.xaml"/>
+    </Window.Resources>
+
+    <Grid Background="{DynamicResource BgWindowBrush}" Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Bundle card: name, path, routing mode. Edits bind the SAME BundleRow
+             instance shown as a chip in the main window → persistence just works. -->
+        <Border Grid.Row="0" Style="{StaticResource CardStyle}" Padding="16,14">
+            <StackPanel>
+                <TextBlock Style="{StaticResource SectionTitle}"
+                           Text="{Binding DisplayName, Mode=OneWay}"/>
+                <TextBlock Text="{Binding FolderPath}" TextWrapping="Wrap" Margin="0,6,0,0"
+                           ToolTip="{Binding FolderPath, StringFormat='{}{0}  (click to copy)'}"
+                           Cursor="Hand"
+                           MouseLeftButtonUp="OnCopyFolderPathClicked"
+                           Foreground="{DynamicResource TextSecondaryBrush}"/>
+                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                    <CheckBox Content="Enabled" IsChecked="{Binding Enabled}"/>
+                    <TextBlock Text="Routing:" Style="{StaticResource FieldLabel}"
+                               VerticalAlignment="Center" Margin="24,0,6,0"/>
+                    <ComboBox SelectedIndex="{Binding ModeIndex}" Width="100">
+                        <ComboBoxItem Content="Proxy"/>
+                        <ComboBoxItem Content="Direct"/>
+                    </ComboBox>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- Matched-executables card -->
+        <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="16,10"
+                Margin="0,10,0,0">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Style="{StaticResource SectionTitle}" Text="Matched executables"/>
+                <TextBlock x:Name="CountText" Style="{StaticResource Hint}"
+                           VerticalAlignment="Center" Margin="12,2,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Horizontal scrolling is disabled and the FULL PATH column is
+             stretched by code-behind so long paths trim with an ellipsis;
+             clicking a path copies it. -->
+        <ListView x:Name="ExeList" Grid.Row="2" Style="{StaticResource DataList}"
+                  Margin="0,10,0,0"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                  SizeChanged="OnExeListSizeChanged">
+            <ListView.View>
+                <GridView AllowsColumnReorder="False">
+                    <GridViewColumn Header="#" Width="44"
+                                    DisplayMemberBinding="{Binding Index}"/>
+                    <GridViewColumn Header="EXECUTABLE" Width="220">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Name}"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Name}"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn x:Name="ExePathColumn" Header="FULL PATH" Width="330">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding FullPath}"
+                                           TextTrimming="CharacterEllipsis"
+                                           Background="Transparent" Cursor="Hand"
+                                           ToolTip="{Binding FullPath}"
+                                           ToolTipService.InitialShowDelay="300"
+                                           MouseLeftButtonUp="OnCopyPathTextClicked"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <TextBlock x:Name="EmptyHint" Grid.Row="2" Visibility="Collapsed"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   Margin="0,10,0,0" Style="{StaticResource Hint}"
+                   Text="No .exe files were found under this folder (the scan runs when the bundle is added)."/>
+
+        <Button Grid.Row="3" Content="Close" MinWidth="96" MinHeight="30"
+                HorizontalAlignment="Right" Margin="0,12,0,0"
+                IsCancel="True" Click="OnCloseClicked"/>
+    </Grid>
+</Window>

@@ -12,9 +12,22 @@ namespace ProxyApp.Core.Configuration;
 public sealed class ApplicationSettings
 {
     /// <summary>
-    /// The SOCKS5 proxy server configuration. Required.
+    /// The SOCKS5 proxy server configuration used by the routing engine
+    /// (the currently ACTIVE proxy). Required for Start.
     /// </summary>
     public ProxyConfiguration? Proxy { get; set; }
+
+    /// <summary>
+    /// Saved proxy profiles. The active <see cref="Proxy"/> is a copy of the
+    /// selected entry; editing the active fields updates the selected profile.
+    /// </summary>
+    public List<ProxyConfiguration> Proxies { get; set; } = new();
+
+    /// <summary>
+    /// The <see cref="ProxyConfiguration.Name"/> of the currently selected
+    /// saved profile. Null/empty when nothing (yet) matches a saved profile.
+    /// </summary>
+    public string? SelectedProxyName { get; set; }
 
     /// <summary>
     /// Application rules evaluated in order: the first rule matching a process
@@ -27,4 +40,7 @@ public sealed class ApplicationSettings
     /// The application-wide log level.
     /// </summary>
     public LogLevelConfiguration LogLevel { get; set; } = LogLevelConfiguration.Information;
+
+    /// <summary>Theme, accent color, and connection-test preferences.</summary>
+    public UiPreferences Preferences { get; set; } = new();
 }

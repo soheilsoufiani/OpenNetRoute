@@ -3,6 +3,38 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:ProxyApp">
     <Application.Resources>
-
+        <!--
+          Implicit ToolTip style (hover text). Tooltips live in popup windows
+          OUTSIDE each Window's visual tree, so an implicit style merged in
+          Themes/Modern.xaml (per-window) never reaches them — verified
+          empirically; the style must live at APPLICATION scope. ThemeApplier
+          swaps the three brushes below on every Apply(...) call, so tooltips
+          follow the app's light/dark palette like every other surface.
+        -->
+        <SolidColorBrush x:Key="ToolTipBackgroundBrush" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="ToolTipForegroundBrush" Color="#1B1B1B"/>
+        <SolidColorBrush x:Key="ToolTipBorderBrush" Color="#D5D5E0"/>
+        <Style TargetType="ToolTip">
+            <Setter Property="Background" Value="{DynamicResource ToolTipBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ToolTipForegroundBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource ToolTipBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToolTip">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Application.Resources>
 </Application>

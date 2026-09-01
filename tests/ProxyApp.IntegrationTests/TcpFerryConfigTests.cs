@@ -34,8 +34,10 @@ public class TcpFerryConfigTests
         var ferry = new TcpFerry(
             new Socks5Client(new ProxyConfiguration
             {
-                Host = "127.0.0.1", Port = 1080,
-                AuthenticationType = ProxyAuthenticationType.None, Enabled = true
+                Host = "127.0.0.1",
+                Port = 1080,
+                AuthenticationType = ProxyAuthenticationType.None,
+                Enabled = true
             }));
 
         Assert.Equal(0, TcpFerry.DefaultHoldMs);
