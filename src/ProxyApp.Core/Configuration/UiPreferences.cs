@@ -49,6 +49,16 @@ public sealed class UiPreferences
     /// </summary>
     public bool TestProxyOnSave { get; set; } = true;
 
+    /// <summary>
+    /// The application-wide UI font: a <see cref="UiFontCatalog.BundledKeys"/>
+    /// entry or <see cref="UiFontCatalog.SystemKey"/> for the Windows system
+    /// font. Defaults to <see cref="UiFontCatalog.DefaultKey"/> (Geist); values
+    /// from older documents or removed families resolve back to the system
+    /// font at apply time (<see cref="UiFontCatalog.Normalize"/>) — never a
+    /// failure.
+    /// </summary>
+    public string AppFontKey { get; set; } = UiFontCatalog.DefaultKey;
+
     // ── Window placement ──
     // Nullable: absent keys (legacy documents, first run) mean "use defaults".
     // Values are captured from the main window's NORMAL-state rectangle

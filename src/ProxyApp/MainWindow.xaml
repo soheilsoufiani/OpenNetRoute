@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="Open NetRoute" Icon="/Assets/app.ico" Height="720" Width="720" MinHeight="560" MinWidth="640"
-        FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True"
+        FontSize="12" UseLayoutRounding="True"
         PreviewKeyDown="OnWindowPreviewKeyDown">
     <Window.Resources>
         <ResourceDictionary Source="/Themes/Modern.xaml"/>
@@ -356,6 +356,15 @@
                                 </StackPanel>
                                 <TextBlock Style="{StaticResource Hint}"
                                            Text="&quot;System&quot; follows the Windows personalization setting at the next launch."/>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,12,0,8">
+                                    <TextBlock Text="Font:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0"/>
+                                    <ComboBox x:Name="AppFontCombo" Width="190"
+                                              ToolTip="Application-wide UI font. The dropdown previews each family in its own face. Bundled fonts are embedded — nothing is installed system-wide."
+                                              SelectionChanged="OnAppFontChanged"/>
+                                    <TextBlock Style="{StaticResource Hint}" Margin="12,0,0,0" VerticalAlignment="Center"
+                                               Text="All bundled faces ship under the SIL Open Font License (see README → Fonts)."/>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 

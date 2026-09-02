@@ -783,6 +783,22 @@ public partial class MainWindow : Window
             AutoStartCheck.IsEnabled = AutoStartManager.IsSupported;
             if (!AutoStartManager.IsSupported)
                 AutoStartCheck.Content += "  (unavailable: executable path unknown)";
+
+            // Font choice — index 0 is the system font, then UiFontCatalog
+            // order. Each item previews in its own family; the closed combo
+            // shows the selected family's name in that family.
+            AppFontCombo.Items.Clear();
+            AppFontCombo.Items.Add(new ComboBoxItem { Content = "System (Segoe UI)" });
+            foreach (var key in UiFontCatalog.BundledKeys)
+                AppFontCombo.Items.Add(new ComboBoxItem
+                {
+                    Content = key,
+                    Tag = key,
+                    FontFamily = FontCatalog.ResolveFamily(key)
+                });
+
+            var fontKey = UiFontCatalog.Normalize(_settings.Preferences.AppFontKey);
+            AppFontCombo.SelectedIndex = UiFontCatalog.IndexOf(fontKey) + 1; // -1 → 0 = system
         }
         finally
         {
@@ -1240,6 +1256,31 @@ public partial class MainWindow : Window
         };
         ThemeApplier.Apply(this, _settings.Preferences);
         ScheduleSave();
+    }
+
+    private void OnAppFontChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_uiReady || _suppressPreferenceEvents)
+            return;
+
+        // Index 0 is "System (Segoe UI)"; the rest map 1:1 to UiFontCatalog order.
+        var key = AppFontCombo.SelectedIndex > 0
+            ? UiFontCatalog.BundledKeys[AppFontCombo.SelectedIndex - 1]
+            : UiFontCatalog.SystemKey;
+        _settings.Preferences.AppFontKey = key;
+
+        ThemeApplier.Apply(this, _settings.Preferences);
+
+        // Secondary windows may be open right now — re-apply so they follow
+        // immediately instead of on their next (re)creation.
+        if (_debugLogWindow is { IsVisible: true } debugWindow)
+            ThemeApplier.Apply(debugWindow, _settings.Preferences);
+        if (_processesWindow is { IsVisible: true } processesWindow)
+            ThemeApplier.Apply(processesWindow, _settings.Preferences);
+
+        ScheduleSave();
+        _logPanel.Log("INFO",
+            $"[Appearance] UI font: {(key.Length == 0 ? "System (Segoe UI)" : key)}.");
     }
 
     private void OnTestPrefChanged(object sender, RoutedEventArgs e)

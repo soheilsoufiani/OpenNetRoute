@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Open NetRoute — Session Log" Icon="/Assets/app.ico" Height="640" Width="980"
         MinHeight="420" MinWidth="720" WindowStartupLocation="CenterOwner"
-        FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True">
+        FontSize="12" UseLayoutRounding="True">
     <Window.Resources>
         <ResourceDictionary Source="/Themes/Modern.xaml"/>
     </Window.Resources>
