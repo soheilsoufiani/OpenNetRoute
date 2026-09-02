@@ -7,6 +7,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Test visibility: the legacy-settings migration helper is internal —
+         unit tests drive it with explicit paths because the parameterless
+         constructor reads the real %APPDATA% location. -->
+    <InternalsVisibleTo Include="ProxyApp.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Dependency justification (AGENTS.md rule 3): first-party Microsoft
          package (MIT), required for DPAPI credential protection at rest
          (SecretProtector). The problem — storing proxy passwords without

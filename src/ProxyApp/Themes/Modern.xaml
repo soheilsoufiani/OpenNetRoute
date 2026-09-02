@@ -1,7 +1,7 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <!--
-        MyProxy modern theme (v1). Tokens below are DEFAULTS so first paint is
+        Open NetRoute modern theme (v1). Tokens below are DEFAULTS so first paint is
         sane; ThemeApplier swaps them at runtime per light/dark preference.
         All consumption uses DynamicResource so live switches propagate.
     -->
@@ -404,6 +404,11 @@
     <Style x:Key="FlatTabs" TargetType="TabControl">
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="BorderThickness" Value="0"/>
+        <!-- Never a keyboard focus sink: a focusable TabControl ends up
+             holding keyboard focus (e.g. after window deactivate/reactivate)
+             and drew a dotted rectangle spanning the entire tab content, and
+             it wastes a Tab stop. TabItems stay focusable and navigable. -->
+        <Setter Property="Focusable" Value="False"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TabControl">
@@ -428,13 +433,20 @@
     </Style>
     <Style TargetType="TabItem">
         <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
-        <Setter Property="Cursor" Value="Hand"/>
+        <!-- NO Cursor setter here: tab content is a *logical* child of its
+             TabItem, and Cursor is an inheritable property — a Hand cursor on
+             the TabItem silently flowed into the whole tab content area (the
+             arrow turned into a hand over labels, cards, list rows — places
+             where clicking does nothing). The pill's own Hand cursor now lives
+             on the Pill border inside the template below, which the tab
+             content is NOT a child of, so it cannot leak. -->
         <Setter Property="Margin" Value="0,0,6,0"/>
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TabItem">
                     <Border x:Name="Pill" Background="Transparent"
+                            Cursor="Hand"
                             CornerRadius="8" Padding="16,8"
                             SnapsToDevicePixels="True">
                         <ContentPresenter x:Name="Header"

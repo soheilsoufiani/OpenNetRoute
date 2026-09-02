@@ -11,7 +11,15 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Embedded window icon (loaded via pack URI by every Window's Icon
+         attribute). Asset copied from /icons/ico_pack_256x256_icon.ico, which
+         carries all sizes 16–256 as frames of a single multi-size file. -->
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\ProxyApp.Core\ProxyApp.Core.csproj" />

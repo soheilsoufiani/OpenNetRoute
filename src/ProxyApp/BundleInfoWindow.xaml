@@ -1,7 +1,7 @@
 <Window x:Class="ProxyApp.BundleInfoWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Folder bundle" Height="540" Width="640"
+        Title="Folder bundle" Icon="/Assets/app.ico" Height="540" Width="640"
         MinHeight="380" MinWidth="480" WindowStartupLocation="CenterOwner"
         FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True">
     <Window.Resources>
@@ -24,7 +24,6 @@
                            Text="{Binding DisplayName, Mode=OneWay}"/>
                 <TextBlock Text="{Binding FolderPath}" TextWrapping="Wrap" Margin="0,6,0,0"
                            ToolTip="{Binding FolderPath, StringFormat='{}{0}  (click to copy)'}"
-                           Cursor="Hand"
                            MouseLeftButtonUp="OnCopyFolderPathClicked"
                            Foreground="{DynamicResource TextSecondaryBrush}"/>
                 <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
@@ -74,10 +73,12 @@
                     <GridViewColumn x:Name="ExePathColumn" Header="FULL PATH" Width="330">
                         <GridViewColumn.CellTemplate>
                             <DataTemplate>
+                                <!-- No Hand cursor (normal arrow outside real buttons);
+                                     click-to-copy is described by the tooltip. -->
                                 <TextBlock Text="{Binding FullPath}"
                                            TextTrimming="CharacterEllipsis"
-                                           Background="Transparent" Cursor="Hand"
-                                           ToolTip="{Binding FullPath}"
+                                           Background="Transparent"
+                                           ToolTip="{Binding FullPath, StringFormat='{}{0}  (click to copy)'}"
                                            ToolTipService.InitialShowDelay="300"
                                            MouseLeftButtonUp="OnCopyPathTextClicked"/>
                             </DataTemplate>

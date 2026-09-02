@@ -35,6 +35,29 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+
+        </Style>
+
+        <!--
+          Hide the system dotted focus rectangle everywhere.
+          WPF draws the default FocusVisualStyle (dotted rectangle) on whatever
+          holds keyboard focus. Besides the dotted outlines seen while
+          Tab-navigating, a deactivated/reactivated window (open/close Start
+          menu, Alt+Tab) repaints the rectangle on mouse-focused elements, and
+          the focusable TabControl paints a huge rectangle across the whole tab
+          content. Overriding the system focus-visual resource with an empty
+          template hides the dotted indicator in every window and popup without
+          touching any control template. Keyboard focus itself is unaffected —
+          only the dotted indicator is removed.
+        -->
+        <Style x:Key="{x:Static SystemParameters.FocusVisualStyleKey}">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Rectangle SnapsToDevicePixels="True"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Application.Resources>
 </Application>

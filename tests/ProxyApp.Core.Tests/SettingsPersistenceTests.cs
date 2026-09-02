@@ -327,4 +327,94 @@ public class SettingsPersistenceTests : IDisposable
         var result = ConfigurationValidator.Validate(settings);
         Assert.Equal(valid, result.IsValid);
     }
+    // ── Legacy MyProxy → Open NetRoute settings migration ──
+
+    private static string NewMigrationRoot() =>
+        Path.Combine(Path.GetTempPath(), "onr-tests", Guid.NewGuid().ToString("N"));
+
+    private static void TryDelete(string directory)
+    {
+        try { Directory.Delete(directory, recursive: true); }
+        catch (IOException) { }
+    }
+
+    [Fact]
+    public void Migration_LegacyFilePresent_NewFileAbsent_CopiesContent()
+    {
+        var root = NewMigrationRoot();
+        var legacy = Path.Combine(root, "MyProxy", "settings.json");
+        var newPath = Path.Combine(root, "OpenNetRoute", "settings.json");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(legacy)!);
+            File.WriteAllText(legacy, """{ "Proxies": [], "Preferences": { "Theme": 2 } }""");
+
+            JsonApplicationSettingsStore.MigrateLegacySettings(legacy, newPath);
+
+            Assert.True(File.Exists(newPath));
+            Assert.True(File.Exists(legacy)); // backup kept — never moved or deleted
+            // Content came across: legacy Dark theme (2), not the System default.
+            Assert.Equal(AppTheme.Dark, new JsonApplicationSettingsStore(newPath).Load().Preferences.Theme);
+        }
+        finally { TryDelete(root); }
+    }
+
+    [Fact]
+    public void Migration_NewFileAlreadyExists_DoesNotOverwrite()
+    {
+        var root = NewMigrationRoot();
+        var legacy = Path.Combine(root, "MyProxy", "settings.json");
+        var newPath = Path.Combine(root, "OpenNetRoute", "settings.json");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
+            File.WriteAllText(newPath, """{ "Proxies": [], "Preferences": { "Theme": 1 } }""");
+            Directory.CreateDirectory(Path.GetDirectoryName(legacy)!);
+            File.WriteAllText(legacy, """{ "Proxies": [], "Preferences": { "Theme": 2 } }""");
+
+            JsonApplicationSettingsStore.MigrateLegacySettings(legacy, newPath);
+
+            // The user's existing new-location settings win — no clobbering.
+            Assert.Equal(AppTheme.Light, new JsonApplicationSettingsStore(newPath).Load().Preferences.Theme);
+        }
+        finally { TryDelete(root); }
+    }
+
+    [Fact]
+    public void Migration_NoLegacyFile_IsNoOp()
+    {
+        var root = NewMigrationRoot();
+        var newPath = Path.Combine(root, "OpenNetRoute", "settings.json");
+
+        JsonApplicationSettingsStore.MigrateLegacySettings(
+            Path.Combine(root, "MyProxy", "settings.json"), newPath);
+
+        Assert.False(File.Exists(newPath));
+        // No empty skeleton directories left behind either.
+        Assert.False(Directory.Exists(Path.GetDirectoryName(newPath)!));
+        TryDelete(root);
+    }
+
+    [Fact]
+    public void Migration_FailureIsSwallowed_LegacyDataUntouched()
+    {
+        var root = NewMigrationRoot();
+        var legacy = Path.Combine(root, "MyProxy", "settings.json");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(legacy)!);
+            File.WriteAllText(legacy, "{}");
+            // Target cannot be created: a FILE occupies the target directory name.
+            var fileAsDir = Path.Combine(root, "OpenNetRoute");
+            File.WriteAllText(fileAsDir, "blocker");
+
+            // Must not throw — app falls back to defaults, legacy file intact.
+            JsonApplicationSettingsStore.MigrateLegacySettings(
+                legacy, Path.Combine(fileAsDir, "settings.json"));
+
+            Assert.True(File.Exists(legacy));
+        }
+        finally { TryDelete(root); }
+    }
+
 }

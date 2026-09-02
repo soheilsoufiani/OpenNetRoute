@@ -1,4 +1,4 @@
-# MyProxy
+# Open NetRoute
 
 An open-source Windows desktop application that routes the traffic of selected
 applications through a user-configured **SOCKS5 proxy**, while leaving all other
@@ -78,9 +78,12 @@ assignments, theme/accent, connection-test preference, window placement) are
 persisted as JSON to:
 
 ```
-%APPDATA%\MyProxy\settings.json
+%APPDATA%\OpenNetRoute\settings.json
 ```
 
+- Coming from the previous **MyProxy** build? The old `%APPDATA%\MyProxy\settings.json`
+  is copied to the new location automatically on first start (the old file is
+  kept as a backup and never deleted).
 - Writes are **atomic** (temp file + replace); a crash mid-save cannot corrupt
   the file. A damaged file is quarantined (`*.corrupt-*`) and the app starts
   with defaults — data stays recoverable by hand.

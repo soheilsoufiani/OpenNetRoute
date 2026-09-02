@@ -10,7 +10,9 @@ namespace ProxyApp.Core.Persistence;
 /// <summary>
 /// JSON-file implementation of <see cref="IApplicationSettingsStore"/>.
 ///
-///  - Location: %APPDATA%\MyProxy\settings.json (overridable for tests).
+///  - Location: %APPDATA%\OpenNetRoute\settings.json (overridable for tests).
+///    First start after the MyProxy → Open NetRoute rename copies a legacy
+///    %APPDATA%\MyProxy\settings.json over (the old file is kept as backup).
 ///  - Writes are ATOMIC: serialize to a temp file in the same directory,
 ///    then File.Replace → a crash mid-save can never truncate the real file.
 ///  - A corrupt settings file is moved aside (never deleted) and defaults are
@@ -33,12 +35,57 @@ public sealed class JsonApplicationSettingsStore : IApplicationSettingsStore
     private readonly string _path;
     private readonly string _directory;
 
-    /// <summary>Creates a store persisting to %APPDATA%\MyProxy\settings.json.</summary>
+    /// <summary>Current settings folder under %APPDATA% ("Open NetRoute").</summary>
+    private const string FolderName = "OpenNetRoute";
+
+    /// <summary>Folder used before the app was renamed to Open NetRoute; migrated from once.</summary>
+    private const string LegacyFolderName = "MyProxy";
+
+    private const string FileName = "settings.json";
+
+    /// <summary>
+    /// Creates a store persisting to %APPDATA%\OpenNetRoute\settings.json.
+    /// If a legacy %APPDATA%\MyProxy\settings.json exists and the new file does
+    /// not, it is copied over so users keep their profiles across the rename.
+    /// </summary>
     public JsonApplicationSettingsStore()
-        : this(Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "MyProxy", "settings.json"))
+        : this(DefaultPath())
     {
+    }
+
+    /// <summary>
+    /// Default settings location: %APPDATA%\OpenNetRoute\settings.json. Triggers
+    /// the one-time legacy migration from the pre-rename MyProxy folder.
+    /// </summary>
+    private static string DefaultPath()
+    {
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var path = Path.Combine(appData, FolderName, FileName);
+        MigrateLegacySettings(Path.Combine(appData, LegacyFolderName, FileName), path);
+        return path;
+    }
+
+    /// <summary>
+    /// One-time legacy migration: copies the pre-rename settings file to the new
+    /// location when the new file does not exist yet. The legacy file is kept
+    /// (never deleted/moved) so an interrupted copy or a user reverting to an
+    /// older build loses nothing. Best-effort: on failure the app starts with
+    /// defaults and the legacy file is untouched — user data is never lost.
+    /// </summary>
+    internal static void MigrateLegacySettings(string legacyPath, string newPath)
+    {
+        try
+        {
+            if (!File.Exists(legacyPath) || File.Exists(newPath))
+                return;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
+            File.Copy(legacyPath, newPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Debug.WriteLine($"[SettingsStore] Legacy settings migration failed: {ex.Message}");
+        }
     }
 
     /// <summary>Creates a store with an explicit file path (tests, portable mode).</summary>

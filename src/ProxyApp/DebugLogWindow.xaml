@@ -1,7 +1,7 @@
 <Window x:Class="ProxyApp.DebugLogWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="MyProxy — Session Log" Height="640" Width="980"
+        Title="Open NetRoute — Session Log" Icon="/Assets/app.ico" Height="640" Width="980"
         MinHeight="420" MinWidth="720" WindowStartupLocation="CenterOwner"
         FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True">
     <Window.Resources>
@@ -25,7 +25,7 @@
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
                             VerticalAlignment="Center">
                     <Button x:Name="CopyButton" Content="Copy Logs" MinWidth="96"
-                            ToolTip="Copy the visible session log to the clipboard"
+                            ToolTip="Copy the ENTIRE session log to the clipboard (to copy only part, select the text above and press Ctrl+C)"
                             Click="OnCopyClicked"/>
                     <Button x:Name="ClearButton" Content="Clear Logs" MinWidth="96" Margin="8,0,0,0"
                             ToolTip="Clear the in-memory session log"
@@ -39,38 +39,22 @@
             </DockPanel>
         </Border>
 
-        <!-- Live log view: binds the shared session collection; severity-tinted
-             rows keep the ListRow hover/select template via BasedOn. -->
-        <ListView x:Name="LogList" Grid.Row="1" Style="{StaticResource DataList}"
-                  VirtualizingPanel.IsVirtualizing="True"
-                  VirtualizingPanel.VirtualizationMode="Recycling"
-                  Margin="14,10,14,4">
-            <ListView.ItemContainerStyle>
-                <Style TargetType="ListViewItem" BasedOn="{StaticResource ListRow}">
-                    <Style.Triggers>
-                        <DataTrigger Binding="{Binding Level}" Value="ERR">
-                            <Setter Property="Foreground" Value="#F26B6B"/>
-                        </DataTrigger>
-                        <DataTrigger Binding="{Binding Level}" Value="ERROR">
-                            <Setter Property="Foreground" Value="#F26B6B"/>
-                        </DataTrigger>
-                        <DataTrigger Binding="{Binding Level}" Value="WARN">
-                            <Setter Property="Foreground" Value="#E0A340"/>
-                        </DataTrigger>
-                    </Style.Triggers>
-                </Style>
-            </ListView.ItemContainerStyle>
-            <ListView.View>
-                <GridView AllowsColumnReorder="False">
-                    <GridViewColumn Header="TIME" Width="92"
-                                    DisplayMemberBinding="{Binding Timestamp}"/>
-                    <GridViewColumn Header="LEVEL" Width="64"
-                                    DisplayMemberBinding="{Binding Level}"/>
-                    <GridViewColumn Header="MESSAGE" Width="760"
-                                    DisplayMemberBinding="{Binding Message}"/>
-                </GridView>
-            </ListView.View>
-        </ListView>
+        <!-- Live log view: a single read-only TEXT view over the shared session
+             log. Unlike the old per-row list, the whole content is one text
+             block — the operator can select any range (drag / double-click /
+             Ctrl+A) and copy just that part with Ctrl+C. Severity tinting is
+             applied per paragraph (red ERR, amber WARN). -->
+        <RichTextBox x:Name="LogView" Grid.Row="1"
+                     Margin="14,10,14,4"
+                     IsReadOnly="True" IsReadOnlyCaretVisible="True"
+                     IsUndoEnabled="False" AcceptsReturn="True" AcceptsTab="False"
+                     VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Disabled"
+                     FontFamily="Consolas" FontSize="12"
+                     Background="{DynamicResource InputBackgroundBrush}"
+                     BorderBrush="{DynamicResource InputBorderBrush}"
+                     BorderThickness="1"
+                     Padding="8,6"/>
 
         <!-- Status strip -->
         <Border Grid.Row="2"

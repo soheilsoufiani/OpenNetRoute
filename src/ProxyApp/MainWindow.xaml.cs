@@ -61,7 +61,7 @@ public sealed class ManualRuleRow : INotifyPropertyChanged
     public string PathToolTip =>
         string.IsNullOrEmpty(ExecutablePath)
             ? "(name-only rule — matches any location)"
-            : ExecutablePath;
+            : ExecutablePath + "  (click to copy)";
 
     private bool _enabled = true;
 

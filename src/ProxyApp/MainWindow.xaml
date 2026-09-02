@@ -4,7 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="MyProxy" Height="720" Width="720" MinHeight="560" MinWidth="640"
+        Title="Open NetRoute" Icon="/Assets/app.ico" Height="720" Width="720" MinHeight="560" MinWidth="640"
         FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True"
         PreviewKeyDown="OnWindowPreviewKeyDown">
     <Window.Resources>
@@ -72,8 +72,18 @@
                                                         <Setter Property="CornerRadius" Value="8"/>
                                                         <Setter Property="Padding" Value="12,10,10,10"/>
                                                         <Setter Property="Margin" Value="0,0,0,8"/>
-                                                        <Setter Property="Cursor" Value="Hand"/>
                                                         <Style.Triggers>
+                                                            <!-- No Hand cursor: the card is a large
+                                                                 surface and the arrow must stay normal
+                                                                 outside real buttons. The hover tint
+                                                                 keeps the click-to-select affordance.
+                                                                 IsMouseOver is listed BEFORE IsSelected
+                                                                 so a hovered selected card keeps its
+                                                                 selection background. -->
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="Background"
+                                                                        Value="{DynamicResource HoverTintBrush}"/>
+                                                            </Trigger>
                                                             <DataTrigger Binding="{Binding IsSelected}" Value="True">
                                                                 <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
                                                                 <Setter Property="Background" Value="{DynamicResource TabSelectedBrush}"/>
@@ -215,9 +225,12 @@
                                             <GridViewColumn x:Name="ManualRulePathColumn" Header="PATH" Width="360">
                                                 <GridViewColumn.CellTemplate>
                                                     <DataTemplate>
+                                                        <!-- No Hand cursor: the cursor must stay the normal
+                                                             arrow outside real buttons. The cell remains
+                                                             click-to-copy; the tooltip says so. -->
                                                         <TextBlock Text="{Binding PathDisplay}"
                                                                    TextTrimming="CharacterEllipsis"
-                                                                   Background="Transparent" Cursor="Hand"
+                                                                   Background="Transparent"
                                                                    ToolTip="{Binding PathToolTip}"
                                                                    ToolTipService.InitialShowDelay="300"
                                                                    MouseLeftButtonUp="OnCopyPathTextClicked"/>

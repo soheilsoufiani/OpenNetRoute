@@ -1,7 +1,7 @@
 <Window x:Class="ProxyApp.ProxyEditorWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Proxy Profile" Height="300" Width="440"
+        Title="Proxy Profile" Icon="/Assets/app.ico" Height="300" Width="440"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         ShowInTaskbar="False">
     <Grid Margin="14">

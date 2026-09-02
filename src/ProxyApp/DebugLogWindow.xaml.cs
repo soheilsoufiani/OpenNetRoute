@@ -1,5 +1,6 @@
-using System.Collections.Specialized;
 using System.Windows;
+using System.Windows.Documents;
+using System.Windows.Media;
 using ProxyApp.Core.Configuration;
 
 namespace ProxyApp;
@@ -10,8 +11,9 @@ namespace ProxyApp;
 /// so it holds the complete history for this session — settings load, service
 /// construction, engine trace, per-connection flow summaries).
 ///
-/// The window owns no buffer and no timer of its own: it binds the shared
-/// observable collection and adds Copy / Clear actions on the store. Theme
+/// The window owns no buffer and no timer of its own: it mirrors the shared
+/// log into a single read-only, fully selectable text view (severity-tinted)
+/// and adds Copy / Clear actions on the store. Theme
 /// tokens are applied at open time (live re-theme while the window is open is
 /// a v1 limitation, consistent with the proxy editor window).
 /// </summary>
@@ -28,27 +30,57 @@ public partial class DebugLogWindow : Window
         InitializeComponent();
         ThemeApplier.Apply(this, prefs);
 
-        LogList.ItemsSource = _panel.Lines;
-        _panel.Lines.CollectionChanged += OnLinesChanged;
+        LogView.Document.Blocks.Clear();
+        foreach (var line in _panel.Lines)
+            LogView.Document.Blocks.Add(FormatLine(line));
+        _panel.TextLogChanged += OnTextLogChanged;
         UpdateCount();
-        ScrollToEnd();
+        LogView.ScrollToEnd();
     }
 
-    private void OnLinesChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    private void OnTextLogChanged(object? sender, PlainLogChangedEventArgs e)
     {
+        if (e.Reset)
+        {
+            LogView.Document.Blocks.Clear();
+        }
+        else
+        {
+            // Ring-buffer overflow trims from the FRONT; the view mirrors it.
+            for (var i = 0; i < e.RemovedFromFront && LogView.Document.Blocks.Count > 0; i++)
+                LogView.Document.Blocks.Remove(LogView.Document.Blocks.FirstBlock);
+
+            foreach (var line in e.Added)
+                LogView.Document.Blocks.Add(FormatLine(line));
+        }
+
         UpdateCount();
 
-        // Auto-follow new lines unless the operator selected one (e.g. to copy
-        // a specific entry) — a selection pins the scroll position.
-        if (e.Action == NotifyCollectionChangedAction.Add && LogList.SelectedItem is null)
-            ScrollToEnd();
+        // Auto-follow the tail unless the operator pinned a position (active
+        // selection, or caret parked away from the end to read/copy history).
+        if (LogView.Selection.IsEmpty &&
+            LogView.CaretPosition.CompareTo(LogView.Document.ContentEnd) >= 0)
+        {
+            LogView.ScrollToEnd();
+        }
     }
 
-    private void ScrollToEnd()
+    /// <summary>
+    /// Builds one monospace paragraph per log line, severity-tinted like the
+    /// previous list view (red ERR/ERROR, amber WARN, primary text otherwise).
+    /// </summary>
+    private Paragraph FormatLine(LogLine line)
     {
-        if (_panel.Lines.Count == 0)
-            return;
-        LogList.ScrollIntoView(_panel.Lines[^1]);
+        var run = new Run($"{line.Timestamp}  {line.Level,-5}  {line.Message}")
+        {
+            Foreground = line.Level switch
+            {
+                "ERR" or "ERROR" => TryFindResource("DangerBrush") as Brush ?? Brushes.Firebrick,
+                "WARN" => TryFindResource("WarningBrush") as Brush ?? Brushes.DarkOrange,
+                _ => TryFindResource("TextPrimaryBrush") as Brush ?? Brushes.Black
+            }
+        };
+        return new Paragraph(run) { Margin = new Thickness(0) };
     }
 
     private void UpdateCount() =>
@@ -72,8 +104,8 @@ public partial class DebugLogWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         // Unhook from the longer-lived panel so the closed window cannot be
-        // kept alive by its CollectionChanged subscription.
-        _panel.Lines.CollectionChanged -= OnLinesChanged;
+        // kept alive by its TextLogChanged subscription.
+        _panel.TextLogChanged -= OnTextLogChanged;
         base.OnClosed(e);
     }
 }
