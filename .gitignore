@@ -2,6 +2,7 @@
 bin/
 obj/
 artifacts/
+dist/
 
 # Visual Studio / Rider
 .vs/

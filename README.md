@@ -51,7 +51,7 @@ The full design analysis behind this approach is in
 ## Requirements
 
 - Windows 10 / 11 (x64)
-- .NET 10 (SDK to build; runtime to run)
+- .NET 10 — **SDK** to build, **Desktop Runtime (x64)** to run
 - **Administrator privileges** to start routing (WinDivert loads a kernel
   driver; everything else — configuration, process enumeration, the SOCKS5
   client — works without elevation)
@@ -60,10 +60,17 @@ Stack: C# / .NET 10, WPF, WinDivert, SOCKS5, xUnit, JSON settings.
 
 ## Installation
 
-No packaged releases yet. Build from source (below) and run the resulting
-`ProxyApp.exe` **as Administrator**. The build deploys `WinDivert.dll` and
-`WinDivert64.sys` next to the executable automatically — keep the files
-together.
+No packaged releases yet. Build a distributable folder from source:
+
+```bash
+dotnet publish src/ProxyApp -c Release -r win-x64 --self-contained false -o dist/ProxyApp
+```
+
+This writes a ready-to-copy `dist\ProxyApp` folder — `ProxyApp.exe` plus the
+runtime files, with `WinDivert.dll` and `WinDivert64.sys` deployed next to it
+automatically (keep the files together). The output requires the **.NET 10
+Desktop Runtime (x64)** on the machine where it runs. Launch `ProxyApp.exe`
+**as Administrator**.
 
 ## Usage
 
@@ -203,6 +210,9 @@ dotnet restore
 dotnet build
 dotnet test
 ```
+
+For a distributable Release build, use the publish command from
+[Installation](#installation).
 
 All 291 tests pass; the end-to-end ferry tests that need the WinDivert driver
 **skip gracefully** in a non-elevated shell — run the suite from an elevated
