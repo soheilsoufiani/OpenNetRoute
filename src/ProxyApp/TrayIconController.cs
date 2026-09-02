@@ -33,6 +33,12 @@ public sealed class TrayIconController : IDisposable
 
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _menu;
+
+    /// <summary>
+    /// Hidden message-only window used as the foreground target for the
+    /// context menu (see <see cref="ShowContextMenu"/>).
+    /// </summary>
+    private readonly NativeWindow _messageWindow;
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _startStopItem;
 
@@ -46,6 +52,10 @@ public sealed class TrayIconController : IDisposable
 
     public TrayIconController()
     {
+        // Message-only target for foreground activation (tray menu fix below).
+        _messageWindow = new NativeWindow();
+        _messageWindow.CreateHandle(new CreateParams { Caption = "OpenNetRoute.TrayHost" });
+
         _statusItem = new ToolStripMenuItem("Status: Stopped") { Enabled = false };
         _startStopItem = new ToolStripMenuItem("Start routing") { Enabled = false };
         _startStopItem.Click += (_, _) =>
@@ -56,7 +66,7 @@ public sealed class TrayIconController : IDisposable
                 StartRequested?.Invoke(this, EventArgs.Empty);
         };
 
-        var openItem = new ToolStripMenuItem("Open Open NetRoute", null,
+        var openItem = new ToolStripMenuItem("Open", null,
             (_, _) => OpenRequested?.Invoke(this, EventArgs.Empty));
         var exitItem = new ToolStripMenuItem("Exit", null,
             (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty));
@@ -74,9 +84,13 @@ public sealed class TrayIconController : IDisposable
 
         (_baseIcon, _ownsBaseIcon) = LoadApplicationIcon();
 
+        // Right-click is handled manually (ShowContextMenu) instead of
+        // NotifyIcon.ContextMenuStrip: a tray menu must be shown while our
+        // process is foreground, or the first focus change — e.g. the taskbar
+        // overflow panel ("⌃") closing — dismisses it before any item can be
+        // clicked.
         _notifyIcon = new NotifyIcon
         {
-            ContextMenuStrip = _menu,
             Text = "Open NetRoute — Stopped",
             Visible = true,
             Icon = _baseIcon
@@ -132,6 +146,15 @@ public sealed class TrayIconController : IDisposable
         _notifyIcon.Dispose();
         _menu.Dispose();
 
+        try
+        {
+            _messageWindow.DestroyHandle();
+        }
+        catch
+        {
+            // Teardown-only: the handle may already be gone; nothing to clean.
+        }
+
         ClearComposedIcon();
         if (_ownsBaseIcon)
             _baseIcon.Dispose();
@@ -139,8 +162,33 @@ public sealed class TrayIconController : IDisposable
 
     private void OnMouseClick(object? sender, MouseEventArgs e)
     {
-        if (e.Button == MouseButtons.Left)
-            OpenRequested?.Invoke(this, EventArgs.Empty);
+        switch (e.Button)
+        {
+            case MouseButtons.Left:
+                OpenRequested?.Invoke(this, EventArgs.Empty);
+                break;
+            case MouseButtons.Right:
+                ShowContextMenu();
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Shows the context menu at the cursor. Before tracking, this process is
+    /// made foreground: a menu opened by a background process is dismissed by
+    /// the first focus change (taskbar overflow panel closing, another window
+    /// activating) because it never owns the foreground menu chain (Microsoft
+    /// KB135788). With the main window hidden this process has no foreground
+    /// window, so right-clicking the tray icon would otherwise produce a menu
+    /// that dies instantly and never closes on outside clicks.
+    /// </summary>
+    private void ShowContextMenu()
+    {
+        if (_disposed || _messageWindow.Handle == IntPtr.Zero)
+            return;
+
+        SetForegroundWindow(_messageWindow.Handle);
+        _menu.Show(Cursor.Position);
     }
 
     // ── Icon composition ──
@@ -228,4 +276,7 @@ public sealed class TrayIconController : IDisposable
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool DestroyIcon(IntPtr hIcon);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }
