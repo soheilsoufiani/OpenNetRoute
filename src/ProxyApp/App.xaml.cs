@@ -36,14 +36,25 @@ public partial class App : Application
         _engine = new ProxyEngine();
         log.Log("INFO", "Engine host constructed.");
 
+        // Phase 11: with the tray enabled and "start minimized to the tray"
+        // persisted, the app launches as a tray icon only — Show() is skipped
+        // so the window stays hidden until the tray icon opens it. The
+        // application keeps running (icon + dispatcher) with no visible window.
+        var startHiddenToTray = settings.Preferences.EnableTrayIcon &&
+                                settings.Preferences.StartMinimizedToTray;
         var mainWindow = new MainWindow(
             _engine,
             new ProcessEnumerator(),
             _settingsStore,
             new Socks5ProxyTester(),
             settings,
-            log);
-        mainWindow.Show();
+            log,
+            startHiddenToTray);
+        if (!startHiddenToTray)
+            mainWindow.Show();
+
+        // Windows shutdown/sign-out must never be held up by close-to-tray.
+        SessionEnding += (_, _) => mainWindow.NotifySessionEnding();
 
         // Diagnostic hook: `ProxyApp.exe --open-debug` opens the session log
         // window immediately (dev convenience + automated smoke tests).

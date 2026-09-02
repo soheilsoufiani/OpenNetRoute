@@ -370,6 +370,41 @@
                                            Text="Runs a SOCKS5 handshake + CONNECT test after a profile is added or edited. Also available via the profile editor's Test button."/>
                             </StackPanel>
                         </Border>
+
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="Tray icon &amp; startup"/>
+                                <CheckBox x:Name="TrayEnabledCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                          Content="Show tray icon (notification area)"
+                                          ToolTip="Notification-area icon with Open, Start/Stop routing, live status and Exit. Enables close-to-tray and minimize-to-tray."
+                                          Checked="OnTrayPrefChanged" Unchecked="OnTrayPrefChanged"/>
+                                <CheckBox x:Name="StartMinimizedCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                          Content="Start minimized to the tray (next launch)"
+                                          ToolTip="The next launch shows no window — only the tray icon. Requires the tray icon."
+                                          Checked="OnTrayPrefChanged" Unchecked="OnTrayPrefChanged"/>
+                                <CheckBox x:Name="MinimizeToTrayCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                          Content="Minimize to the tray instead of the taskbar"
+                                          ToolTip="The minimize button hides the window; the tray icon restores it. Requires the tray icon."
+                                          Checked="OnTrayPrefChanged" Unchecked="OnTrayPrefChanged"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="Close (X) button:"
+                                               Style="{StaticResource FieldLabel}"
+                                               VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <ComboBox x:Name="CloseBehaviorCombo" Width="240"
+                                              SelectionChanged="OnCloseBehaviorChanged">
+                                        <ComboBoxItem Content="Hide to the tray (keep routing)"/>
+                                        <ComboBoxItem Content="Exit the application"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <CheckBox x:Name="AutoStartCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                          Content="Start Open NetRoute when Windows signs in (current user)"
+                                          ToolTip="Registers the current executable under HKCU\Software\Microsoft\Windows\CurrentVersion\Run. The window/tray behavior of that launch follows the settings above."
+                                          Checked="OnAutoStartChanged" Unchecked="OnAutoStartChanged"/>
+                                <TextBlock Style="{StaticResource Hint}"
+                                           Text="With the tray icon on, the engine keeps routing while the window is hidden — Exit lives in the tray menu. With it off, Close always exits and minimize uses the taskbar."/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

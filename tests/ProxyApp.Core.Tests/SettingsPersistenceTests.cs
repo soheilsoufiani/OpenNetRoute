@@ -27,6 +27,47 @@ public class SettingsPersistenceTests : IDisposable
     private JsonApplicationSettingsStore NewStore() => new(_path);
 
     [Fact]
+    public void SaveThenLoad_RoundTripsTrayPreferences()
+    {
+        var store = NewStore();
+        var original = new ApplicationSettings
+        {
+            Preferences = new UiPreferences
+            {
+                EnableTrayIcon = false,
+                StartMinimizedToTray = true,
+                MinimizeToTrayInsteadOfTaskbar = false,
+                CloseButton = CloseButtonBehavior.Exit
+            }
+        };
+
+        store.Save(original);
+        var loaded = store.Load();
+
+        Assert.False(loaded.Preferences.EnableTrayIcon);
+        Assert.True(loaded.Preferences.StartMinimizedToTray);
+        Assert.False(loaded.Preferences.MinimizeToTrayInsteadOfTaskbar);
+        Assert.Equal(CloseButtonBehavior.Exit, loaded.Preferences.CloseButton);
+    }
+
+    [Fact]
+    public void Load_LegacyDocumentWithoutTrayKeys_UsesTrayDefaults()
+    {
+        // Documents written before the tray feature exist have no tray keys;
+        // absent keys must fall back to the feature defaults, never to
+        // disabled/closed semantics that would strand the icon or the window.
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        File.WriteAllText(_path, """{ "Proxies": [], "Preferences": { "Theme": 1 } }""");
+
+        var loaded = NewStore().Load();
+
+        Assert.True(loaded.Preferences.EnableTrayIcon);
+        Assert.False(loaded.Preferences.StartMinimizedToTray);
+        Assert.True(loaded.Preferences.MinimizeToTrayInsteadOfTaskbar);
+        Assert.Equal(CloseButtonBehavior.MinimizeToTray, loaded.Preferences.CloseButton);
+    }
+
+    [Fact]
     public void Load_MissingFile_ReturnsDefaults()
     {
         var settings = NewStore().Load();

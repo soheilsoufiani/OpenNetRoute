@@ -12,8 +12,25 @@ public enum AppTheme
 }
 
 /// <summary>
+/// What the main window's close (X) button does while the tray icon is
+/// enabled (<see cref="UiPreferences.EnableTrayIcon"/>).
+/// </summary>
+public enum CloseButtonBehavior
+{
+    /// <summary>
+    /// Close hides the window to the notification area; the engine keeps
+    /// routing in the background. The tray icon's Exit menu item exits.
+    /// </summary>
+    MinimizeToTray = 0,
+
+    /// <summary>Close exits the application (stops the engine).</summary>
+    Exit = 1
+}
+
+/// <summary>
 /// User interface preferences persisted across launches: theme, accent color,
-/// and the proxy connection-test preference.
+/// the proxy connection-test preference, window placement, and the tray
+/// (notification-area) behavior.
 /// </summary>
 public sealed class UiPreferences
 {
@@ -52,4 +69,27 @@ public sealed class UiPreferences
 
     /// <summary>The window was maximized when the app was last closed.</summary>
     public bool WindowMaximized { get; set; }
+
+    // ── Tray (notification area) ──
+
+    /// <summary>
+    /// Shows the notification-area icon with its control menu
+    /// (Open / Start-Stop routing / Exit) and engine status.
+    /// </summary>
+    public bool EnableTrayIcon { get; set; } = true;
+
+    /// <summary>
+    /// The next launch starts minimized to the tray (main window hidden until
+    /// the tray icon is used). Requires <see cref="EnableTrayIcon"/>.
+    /// </summary>
+    public bool StartMinimizedToTray { get; set; }
+
+    /// <summary>
+    /// The minimize button hides the window to the tray instead of leaving it
+    /// on the taskbar. Requires <see cref="EnableTrayIcon"/>.
+    /// </summary>
+    public bool MinimizeToTrayInsteadOfTaskbar { get; set; } = true;
+
+    /// <summary>What the close (X) button does while the tray icon is shown.</summary>
+    public CloseButtonBehavior CloseButton { get; set; } = CloseButtonBehavior.MinimizeToTray;
 }

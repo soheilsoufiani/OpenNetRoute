@@ -265,13 +265,29 @@ public partial class MainWindow : Window
     /// <summary>Debounced persistence: restarted on every mutation, fires Save.</summary>
     private readonly DispatcherTimer _saveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
 
+    /// <summary>
+    /// The notification-area (tray) icon; null when the user disabled it
+    /// (<see cref="UiPreferences.EnableTrayIcon"/>). UI thread only.
+    /// </summary>
+    private TrayIconController? _tray;
+
+    /// <summary>
+    /// Guards programmatic preference-control updates during startup restore:
+    /// their change events must not re-write the values they are echoing.
+    /// </summary>
+    private bool _suppressPreferenceEvents;
+
+    /// <summary>True once Windows signals session end (shutdown/sign-out).</summary>
+    private bool _sessionEnding;
+
     public MainWindow(
         IProxyEngine engine,
         IProcessEnumerator processEnumerator,
         IApplicationSettingsStore settingsStore,
         IProxyTester proxyTester,
         ApplicationSettings? settings = null,
-        LogPanel? logPanel = null)
+        LogPanel? logPanel = null,
+        bool startHiddenToTray = false)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _processEnumerator = processEnumerator ?? throw new ArgumentNullException(nameof(processEnumerator));
@@ -309,6 +325,36 @@ public partial class MainWindow : Window
         _logPanel.Log("INFO", "Engine trace + flow-summary sinks wired.");
 
         RefreshProcesses();
+
+        // Phase 11: tray icon (notification area). Created AFTER state restore
+        // so its first state sync already knows the selected profile.
+        _tray = _settings.Preferences.EnableTrayIcon
+            ? new TrayIconController()
+            : null;
+        if (_tray is not null)
+        {
+            _tray.OpenRequested += OnTrayOpenRequested;
+            _tray.StartRequested += OnTrayStartRequested;
+            _tray.StopRequested += OnTrayStopRequested;
+            _tray.ExitRequested += OnTrayExitRequested;
+            SyncTrayState();
+            _logPanel.Log("INFO", "Tray icon shown (notification area).");
+        }
+        else
+        {
+            _logPanel.Log("INFO", "Tray icon disabled in settings.");
+        }
+
+        // "Start minimized to the tray" is consumed here for THIS launch; it
+        // is not auto-cleared, so a tray-only restart repeats the behavior
+        // until the user turns the option off (the setting is the contract).
+        if (startHiddenToTray)
+        {
+            _logPanel.Log("INFO", "Starting minimized to tray (window hidden).");
+            if (_tray is { } tray)
+                tray.ShowBalloon("Open NetRoute is running in the tray",
+                    "Use the tray icon to open the window or exit.");
+        }
     }
 
     private void RefreshProcesses()
@@ -717,6 +763,32 @@ public partial class MainWindow : Window
         };
         TestOnSaveCheck.IsChecked = _settings.Preferences.TestProxyOnSave;
 
+        // Tray group — checkboxes echo the persisted prefs; the auto-start
+        // checkbox reflects the REGISTRY (its single source of truth).
+        // Programmatic updates are guarded so the change handlers stay inert.
+        _suppressPreferenceEvents = true;
+        try
+        {
+            TrayEnabledCheck.IsChecked = _settings.Preferences.EnableTrayIcon;
+            StartMinimizedCheck.IsChecked = _settings.Preferences.StartMinimizedToTray;
+            StartMinimizedCheck.IsEnabled = _settings.Preferences.EnableTrayIcon;
+            MinimizeToTrayCheck.IsChecked = _settings.Preferences.MinimizeToTrayInsteadOfTaskbar;
+            MinimizeToTrayCheck.IsEnabled = _settings.Preferences.EnableTrayIcon;
+            CloseBehaviorCombo.SelectedIndex = _settings.Preferences.CloseButton switch
+            {
+                CloseButtonBehavior.Exit => 1,
+                _ => 0
+            };
+            AutoStartCheck.IsChecked = AutoStartManager.IsEnabled();
+            AutoStartCheck.IsEnabled = AutoStartManager.IsSupported;
+            if (!AutoStartManager.IsSupported)
+                AutoStartCheck.Content += "  (unavailable: executable path unknown)";
+        }
+        finally
+        {
+            _suppressPreferenceEvents = false;
+        }
+
         ThemeApplier.Apply(this, _settings.Preferences);
     }
 
@@ -848,6 +920,7 @@ public partial class MainWindow : Window
             p.IsSelected = ReferenceEquals(p, item);
         _selectedProfileItem = item;
         _settings.SelectedProxyName = item?.Config.Name;
+        SyncTrayState(); // the tray's Start gate and status follow the selection
         if (_uiReady)
             ScheduleSave();
     }
@@ -970,6 +1043,7 @@ public partial class MainWindow : Window
         _profiles.Clear();
         _selectedProfileItem = null;
         _settings.SelectedProxyName = null;
+        SyncTrayState();
 
         UpdateEmptyStateHints();
         SetStatus($"Deleted {count} proxy profile(s).");
@@ -1174,6 +1248,103 @@ public partial class MainWindow : Window
         ScheduleSave();
     }
 
+    // ―― Tray & startup settings (Phase 11) ――
+
+    private void OnTrayPrefChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_uiReady || _suppressPreferenceEvents)
+            return;
+
+        _settings.Preferences.EnableTrayIcon = TrayEnabledCheck.IsChecked == true;
+        _settings.Preferences.StartMinimizedToTray = StartMinimizedCheck.IsChecked == true;
+        _settings.Preferences.MinimizeToTrayInsteadOfTaskbar = MinimizeToTrayCheck.IsChecked == true;
+
+        // The dependent options are meaningless without the icon: disable them
+        // so the UI keeps telling the truth about what is in effect.
+        StartMinimizedCheck.IsEnabled = _settings.Preferences.EnableTrayIcon;
+        MinimizeToTrayCheck.IsEnabled = _settings.Preferences.EnableTrayIcon;
+
+        SetTrayEnabled(_settings.Preferences.EnableTrayIcon);
+        ScheduleSave();
+        _logPanel.Log("INFO",
+            $"[Tray] Icon {(_settings.Preferences.EnableTrayIcon ? "enabled" : "disabled")}; " +
+            $"start-minimized={_settings.Preferences.StartMinimizedToTray}; " +
+            $"minimize-to-tray={_settings.Preferences.MinimizeToTrayInsteadOfTaskbar}.");
+    }
+
+    private void OnCloseBehaviorChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_uiReady || _suppressPreferenceEvents)
+            return;
+
+        _settings.Preferences.CloseButton = CloseBehaviorCombo.SelectedIndex == 1
+            ? CloseButtonBehavior.Exit
+            : CloseButtonBehavior.MinimizeToTray;
+        ScheduleSave();
+        _logPanel.Log("INFO", $"[Tray] Close button behavior: {_settings.Preferences.CloseButton}.");
+    }
+
+    private void OnAutoStartChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_uiReady || _suppressPreferenceEvents)
+            return;
+
+        var wantEnabled = AutoStartCheck.IsChecked == true;
+        if (AutoStartManager.SetEnabled(wantEnabled))
+        {
+            SetStatus(wantEnabled
+                ? "Open NetRoute will start when Windows signs in (current user)."
+                : "Auto-start with Windows disabled.");
+            _logPanel.Log("INFO", $"[Tray] Auto-start {(wantEnabled ? "registered" : "removed")} (HKCU Run).");
+            // Intentionally NOT persisted: the registry is the single source
+            // of truth; the checkbox just mirrors it.
+        }
+        else
+        {
+            // The registry write failed — revert the visual, surface the
+            // failure (never silent), and re-read the actual state.
+            AutoStartCheck.IsChecked = AutoStartManager.IsEnabled();
+            SetStatus("Could not update the Windows auto-start registration (registry access denied?).",
+                StatusSeverity.Error);
+            _logPanel.Log("ERR", "[Tray] Auto-start registry update failed.");
+        }
+    }
+
+    /// <summary>Creates or destroys the tray icon to match the preference.</summary>
+    private void SetTrayEnabled(bool enabled)
+    {
+        if (enabled && _tray is null)
+        {
+            _tray = new TrayIconController();
+            _tray.OpenRequested += OnTrayOpenRequested;
+            _tray.StartRequested += OnTrayStartRequested;
+            _tray.StopRequested += OnTrayStopRequested;
+            _tray.ExitRequested += OnTrayExitRequested;
+            SyncTrayState();
+            _logPanel.Log("INFO", "[Tray] Icon created.");
+        }
+        else if (!enabled && _tray is { } tray)
+        {
+            tray.OpenRequested -= OnTrayOpenRequested;
+            tray.StartRequested -= OnTrayStartRequested;
+            tray.StopRequested -= OnTrayStopRequested;
+            tray.ExitRequested -= OnTrayExitRequested;
+            tray.Dispose();
+            _tray = null;
+            _logPanel.Log("INFO", "[Tray] Icon removed.");
+        }
+    }
+
+    /// <summary>Pushes engine state + the selected profile into the tray icon.</summary>
+    private void SyncTrayState()
+    {
+        if (_tray is null)
+            return;
+
+        var profile = SelectedProfile;
+        _tray.SetEngineState(_engine.IsRunning, profile?.Name);
+    }
+
     // â”€â”€ Start / Stop â”€â”€
 
     private void OnEngineToggleChecked(object sender, RoutedEventArgs e)
@@ -1204,6 +1375,72 @@ public partial class MainWindow : Window
             // Stop failed — snap the toggle back to the running (STOP) state.
             EngineToggleButton.IsChecked = true;
         }
+    }
+
+    // ―― Tray command handlers (Phase 11) ――
+    // The tray icon raises INTENTS; this window executes them through the
+    // SAME Start/Stop cores as the window toggle, so validation, elevation
+    // notices, status text and snap-back logic exist exactly once.
+
+    private void OnTrayOpenRequested(object? sender, EventArgs e) => ShowFromTray();
+
+    private void OnTrayStartRequested(object? sender, EventArgs e)
+    {
+        if (_engine.IsRunning)
+        {
+            SyncTrayState();
+            return;
+        }
+
+        _logPanel.Log("INFO", "Start requested from the tray icon");
+        StartEngineCore();
+        SyncTrayState();
+
+        // A hidden window cannot show the status bar: announce the outcome.
+        if (_engine.IsRunning)
+            _tray?.ShowBalloon("Routing started",
+                "Selected applications are routed through the proxy.");
+        else if (_tray is not null)
+            _tray.ShowBalloon("Could not start routing", StatusText.Text);
+    }
+
+    private async void OnTrayStopRequested(object? sender, EventArgs e)
+    {
+        if (!_engine.IsRunning)
+        {
+            SyncTrayState();
+            return;
+        }
+
+        _logPanel.Log("INFO", "Stop requested from the tray icon");
+        await StopEngineCoreAsync();
+        SyncTrayState();
+
+        if (!_engine.IsRunning)
+            _tray?.ShowBalloon("Routing stopped",
+                "All traffic is back on the normal network path.");
+    }
+
+    private async void OnTrayExitRequested(object? sender, EventArgs e)
+    {
+        _logPanel.Log("INFO", "Exit requested from the tray icon");
+        if (_engine.IsRunning)
+            await StopEngineCoreAsync();
+
+        // Explicit exit: bypass close-to-tray, tear down, then shut the app
+        // down explicitly (covers a never-shown main window too).
+        _realExit = true;
+        Close();
+        Application.Current.Shutdown();
+    }
+
+    /// <summary>Shows and activates the window (tray click / Open menu item).</summary>
+    private void ShowFromTray()
+    {
+        Show();
+        if (WindowState == WindowState.Minimized)
+            WindowState = WindowState.Normal;
+        Activate();
     }
 
     /// <summary>
@@ -1269,6 +1506,7 @@ public partial class MainWindow : Window
         finally
         {
             EngineToggleButton.IsEnabled = true;
+            SyncTrayState(); // badge/status/Start-gate follow the engine on every path
         }
     }
 
@@ -1294,6 +1532,7 @@ public partial class MainWindow : Window
         finally
         {
             EngineToggleButton.IsEnabled = true;
+            SyncTrayState(); // badge/status/Start-gate follow the engine on every path
         }
     }
 
@@ -1500,8 +1739,23 @@ public partial class MainWindow : Window
     protected override void OnStateChanged(EventArgs e)
     {
         base.OnStateChanged(e);
-        if (_uiReady)
-            ScheduleSave();
+        if (!_uiReady)
+            return;
+
+        // Phase 11: minimize-to-tray — hide instead of docking to the taskbar.
+        // The engine and the message loop keep running; the tray icon (or the
+        // taskbar while the window is merely hidden) restores it. Skipped when
+        // the icon is disabled — otherwise the window would be unreachable.
+        if (WindowState == WindowState.Minimized &&
+            _tray is not null &&
+            _settings.Preferences.MinimizeToTrayInsteadOfTaskbar &&
+            !_sessionEnding)
+        {
+            Hide();
+            _logPanel.Log("INFO", "Minimized to tray (window hidden, engine unaffected).");
+        }
+
+        ScheduleSave();
     }
 
     /// <summary>Severity of a message shown in the bottom status bar.</summary>
@@ -1569,9 +1823,46 @@ public partial class MainWindow : Window
     private void OnDebugClicked(object sender, RoutedEventArgs e) =>
         OpenDebugLogWindow();
 
+    /// <summary>
+    /// True for an explicit exit (tray Exit / real close) — bypasses
+    /// close-to-tray so the window actually closes.
+    /// </summary>
+    private bool _realExit;
+
+    /// <summary>
+    /// Phase 11: close-to-tray. With the icon enabled and the close button at
+    /// its default, the X button HIDES the window and the engine keeps routing
+    /// in the background; exit lives in the tray menu. Without the icon (or
+    /// with CloseButton=Exit, or on session end) the close proceeds — the
+    /// window can never end up hidden with no way to bring it back.
+    /// </summary>
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (!_realExit &&
+            !_sessionEnding &&
+            _tray is not null &&
+            _settings.Preferences.CloseButton == CloseButtonBehavior.MinimizeToTray)
+        {
+            e.Cancel = true;
+            Hide();
+            _tray.ShowBalloon("Open NetRoute keeps routing",
+                "Minimized to the tray. Use the tray icon to open the window or exit.");
+            _logPanel.Log("INFO", "Close button: hidden to tray (engine keeps running).");
+            return;
+        }
+
+        base.OnClosing(e);
+    }
+
+    /// <summary>
+    /// Called by App when Windows is shutting down or signing out: the pending
+    /// close must PROCEED (never hide) so the session end is not blocked.
+    /// </summary>
+    public void NotifySessionEnding() => _sessionEnding = true;
+
     protected override void OnClosed(EventArgs e)
     {
-        // Final persistence flush â€” state is never lost on close.
+        // Final persistence flush — state is never lost on close.
         try
         {
             PersistNow();
@@ -1582,6 +1873,8 @@ public partial class MainWindow : Window
             // persisted incrementally.
         }
 
+        _tray?.Dispose();
+        _tray = null;
         _logPanel.Shutdown();
         base.OnClosed(e);
     }

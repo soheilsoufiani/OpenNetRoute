@@ -10,9 +10,31 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <!-- Dependency justification (AGENTS.md rule 3): Windows Forms is a
+         first-party framework assembly (MIT, ships with Windows/.NET),
+         required ONLY for System.Windows.Forms.NotifyIcon/ContextMenuStrip
+         in TrayIconController.cs — the notification-area icon has no WPF
+         equivalent. All tray code stays isolated in that single file; no
+         other WinForms surface is used. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- WFO0003: the WinForms analyzer wants DPI configured via
+         Application.SetHighDpiMode, which applies to WinForms-only apps. This
+         is a WPF app whose DPI behavior comes from app.manifest; WinForms is
+         used solely for the tray NotifyIcon inside the WPF message loop, so
+         the manifest settings must stay. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The Windows Forms implicit usings (System.Windows.Forms,
+         System.Drawing) would ambiguize common WPF names (Button, Clipboard,
+         MessageBox, ...) in every other file of this project.
+         TrayIconController.cs imports both namespaces explicitly instead. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Embedded window icon (loaded via pack URI by every Window's Icon

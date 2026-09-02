@@ -6,9 +6,10 @@ applications on the normal network path. A lightweight, transparent alternative
 to tools such as Proxifier.
 
 **Status: pre-beta (v0.0.1).** The networking core (WinDivert interception →
-SOCKS5 ferry) and the WPF GUI are implemented and covered by 278 automated
-tests. DNS interception, tray integration, and release packaging are still
-pending — see [Limitations](#limitations-please-read) for the honest picture.
+SOCKS5 ferry), the WPF GUI, and the tray integration are implemented and
+covered by 291 automated tests. DNS interception and release packaging are
+still pending — see [Limitations](#limitations-please-read) for the honest
+picture.
 
 ## Features
 
@@ -21,6 +22,9 @@ pending — see [Limitations](#limitations-please-read) for the honest picture.
   running-process list, from disk (`.exe` picker), or as **folder bundles**.
 - **In-app debug window** — bounded, real-time connection event log with
   per-connection summaries and health statistics.
+- **Tray icon** — start/stop routing from the notification area, live status
+  with a green "routing" badge, close/minimize to tray, and optional
+  start-with-Windows (per-user auto-start).
 - **Theme** — system / light / dark.
 - **Robust settings persistence** — atomic JSON writes, corruption
   quarantine, DPAPI-encrypted proxy passwords (details below).
@@ -72,6 +76,31 @@ together.
 4. Press **STOP** to tear all ferry flows down and return to the normal
    network path.
 
+## Tray & startup
+
+- The **notification-area icon** mirrors the engine state: a tooltip and menu
+  line show *Stopped* / *Routing via \<profile\>*, and a green badge is drawn
+  on the icon while routing. Left-click (or **Open**) brings the window back.
+- The tray menu can **start/stop routing** — the same validated start/stop
+  path as the window toggle; when the window is hidden the outcome is
+  announced with a balloon notification instead of the status bar.
+- The Settings tab controls the behavior:
+  - **Enable tray icon** (default: on). Turning it off removes the icon;
+    close-to-tray and minimize-to-tray are then disabled too, so the window
+    can never become unreachable.
+  - **Close button minimizes to tray** (default: on) — the ✕ button hides the
+    window and the engine keeps routing; exit lives in the tray menu. Set it
+    to *Exit* if you prefer the classic behavior.
+  - **Minimize button hides to tray** (default: on) — same idea for the
+    minimize button.
+  - **Start minimized to tray** (default: off) — the next launch begins
+    hidden in the notification area with a balloon notice.
+- **Auto-start with Windows** registers the executable (quoted path) under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for the **current user
+  only** — no admin rights, no services, no scheduled tasks. The checkbox
+  mirrors the registry (the single source of truth); a failed registry write
+  is reported as an error and never silently ignored.
+
 ## SOCKS5 configuration
 
 - Host + port, optional username/password (RFC 1929) or no authentication
@@ -105,8 +134,8 @@ driver service is not installed) instead of failing silently.
 ## Settings storage
 
 All settings (proxy profiles, selected profile, application rules, bundle
-assignments, theme and accent, connection-test preference, window placement)
-are persisted as JSON to:
+assignments, theme and accent, connection-test preference, tray preferences,
+window placement) are persisted as JSON to:
 
 ```
 %APPDATA%\OpenNetRoute\settings.json
@@ -125,6 +154,8 @@ are persisted as JSON to:
 - The full state is flushed on close; edits during the session are saved
   incrementally (immediately for structural changes such as adding or deleting
   a profile, debounced while typing).
+- The **auto-start registration is NOT stored here** — the HKCU `Run` value is
+  the single source of truth for that setting (see [Tray & startup](#tray--startup)).
 
 ## Limitations (please read)
 
@@ -140,7 +171,6 @@ are persisted as JSON to:
   the ferry entirely and goes direct. (The SOCKS5 client itself is
   IPv6-capable and tested against IPv6 destinations.)
 - **DoH / DoT** (DNS over HTTPS/TLS) cannot be intercepted by design.
-- **No tray** — the main window must keep running.
 - Antivirus products occasionally flag WinDivert-based tools; the bundled
   binaries are the unmodified official WinDivert build.
 - No installer yet; a folder copy of the build output is the distribution.
@@ -159,7 +189,8 @@ are persisted as JSON to:
 - [ ] Phase 8 — DNS behavior (**design only** — leaks today; see `docs/DNS-DESIGN.md`)
 - [ ] Phase 9 — IPv6 behavior (interception is IPv4-only today)
 - [x] Phase 10 — WPF GUI (profiles, rules, bundles, debug window, themes)
-- [ ] Phase 11 — Tray application
+- [x] Phase 11 — Tray application (icon + menu with Open / Start-Stop / status
+  / Exit, close- and minimize-to-tray, start-minimized, per-user auto-start)
 - [ ] Phase 12 — Logging (in progress: in-app debug window with bounded event
       log and per-connection summaries; broader structured logging pending)
 
@@ -173,7 +204,7 @@ dotnet build
 dotnet test
 ```
 
-All 278 tests pass; the end-to-end ferry tests that need the WinDivert driver
+All 291 tests pass; the end-to-end ferry tests that need the WinDivert driver
 **skip gracefully** in a non-elevated shell — run the suite from an elevated
 shell to execute them for real. They use a local SOCKS5 test server, never an
 external proxy, and clean up after themselves. For a manual end-to-end check
