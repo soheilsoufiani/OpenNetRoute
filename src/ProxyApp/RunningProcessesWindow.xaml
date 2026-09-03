@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Open NetRoute — Running Processes" Icon="/Assets/app.ico" Height="640" Width="900"
         MinHeight="420" MinWidth="640" WindowStartupLocation="CenterOwner"
-        FontSize="12" UseLayoutRounding="True">
+        FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True">
     <Window.Resources>
         <ResourceDictionary Source="/Themes/Modern.xaml"/>
     </Window.Resources>

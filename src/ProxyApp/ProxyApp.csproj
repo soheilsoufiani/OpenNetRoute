@@ -44,16 +44,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Bundled UI fonts (all SIL OFL 1.1 — the OFL.txt for each family sits
-         next to its faces and is copied to the output folder as Content for
-         redistribution compliance). Two faces per family (Regular/Bold):
-         the folder pack URI groups a family's faces, so WPF picks the real
-         Bold instead of synthesizing one. -->
-    <Resource Include="Assets\Fonts\**\*.ttf" />
-    <Content Include="Assets\Fonts\**\OFL.txt" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\ProxyApp.Core\ProxyApp.Core.csproj" />
     <ProjectReference Include="..\ProxyApp.WinDivert\ProxyApp.WinDivert.csproj" />
   </ItemGroup>

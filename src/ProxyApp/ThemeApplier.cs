@@ -8,10 +8,9 @@ using Microsoft.Win32;
 namespace ProxyApp;
 
 /// <summary>
-/// Applies persisted <see cref="UiPreferences"/> to a window: swaps the
+/// Applies persisted <see cref="UiPreferences"/> to a window by swapping the
 /// themed resource tokens defined in Themes/Modern.xaml
-/// (<c>BgWindowBrush</c>, <c>CardBrush</c>, <c>TextPrimaryBrush</c>, …) AND
-/// applies the selected UI font (<see cref="FontCatalog"/>) at window scope.
+/// (<c>BgWindowBrush</c>, <c>CardBrush</c>, <c>TextPrimaryBrush</c>, …).
 ///
 /// Scope note (v1): token-based recoloring of surfaces/text/accents — not a
 /// full control-template reskin; standard controls inherit readable colors
@@ -130,13 +129,6 @@ public static class ThemeApplier
 
         window.Background = (SolidColorBrush)res["BgWindowBrush"];
         window.Foreground = (SolidColorBrush)res["TextPrimaryBrush"];
-
-        // UI font: the persisted choice resolves to an embedded family (with
-        // a Segoe UI fallback chain) applied at WINDOW scope — everything in
-        // the window's tree inherits it. ThemeApplier is the single
-        // application point for both palette and font, so every window that
-        // themes itself also picks up the font automatically.
-        window.FontFamily = FontCatalog.ResolveFamily(preferences.AppFontKey);
 
         // Native chrome follows the palette too — but only once the HWND
         // exists (ctor-time calls are too early; OnSourceInitialized re-applies).

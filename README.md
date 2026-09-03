@@ -25,10 +25,7 @@ picture.
 - **Tray icon** — start/stop routing from the notification area, live status
   with a green "routing" badge, close/minimize to tray, and optional
   start-with-Windows (per-user auto-start).
-- **Theme & UI font** — system / light / dark, plus an application-wide font
-  picker: Geist (the default face), Geist Mono, JetBrains Mono, Plus Jakarta
-  Sans, Public Sans and Space Grotesk — all bundled, all SIL OFL 1.1
-  (see [Fonts](#fonts-ui-appearance)).
+- **Theme** — system / light / dark.
 - **Robust settings persistence** — atomic JSON writes, corruption
   quarantine, DPAPI-encrypted proxy passwords (details below).
 
@@ -141,45 +138,11 @@ exact error with a human explanation (e.g. `ERROR_FILE_NOT_FOUND` → the
 `WinDivert64.sys` driver was not found, `ERROR_SERVICE_DOES_NOT_EXIST` → the
 driver service is not installed) instead of failing silently.
 
-## Fonts (UI appearance)
-
-**Settings → Appearance → Font** switches the application-wide UI font. The
-choice persists in `settings.json` (`Preferences.AppFontKey`) and is applied
-to every window.
-
-| Font | Role | License |
-|------|------|---------|
-| Geist | **Default** — Vercel's geometric UI sans | SIL OFL 1.1 |
-| Geist Mono | Monospace sibling of Geist | SIL OFL 1.1 |
-| JetBrains Mono | Developer-favorite monospace | SIL OFL 1.1 |
-| Plus Jakarta Sans | Rounded modern geometric sans | SIL OFL 1.1 |
-| Public Sans | Neutral sans (USWDS) | SIL OFL 1.1 |
-| Space Grotesk | Techy display sans | SIL OFL 1.1 |
-| System (Segoe UI) | The Windows system font | ships with Windows |
-
-Open-source compliance and behavior notes:
-
-- Fonts are **embedded in the executable** (WPF resources) — nothing is
-  installed system-wide, and the selection travels with the app folder.
-- Every bundled family is licensed under the **SIL Open Font License 1.1**,
-  which explicitly permits bundling and redistribution inside software
-  projects (open-source or commercial). The unmodified `OFL.txt` of each
-  family is kept next to the faces in the source tree
-  (`src/ProxyApp/Assets/Fonts/<Family>/OFL.txt`) and copied to the output
-  folder next to the executable, as the license requires.
-- Only Regular and Bold faces are bundled (the UI uses no other weights); the
-  two faces of a family share one internal family name, so WPF resolves the
-  real Bold instead of synthesizing one.
-- The tray icon's context menu is a native Windows (WinForms) strip and keeps
-  the OS menu font; WinForms cannot consume WPF-embedded fonts.
-- The session log body stays monospaced (`Consolas`) by design — it is
-  machine-generated trace text.
-
 ## Settings storage
 
 All settings (proxy profiles, selected profile, application rules, bundle
-assignments, theme, accent and UI font, connection-test preference, tray
-preferences, window placement) are persisted as JSON to:
+assignments, theme and accent, connection-test preference, tray preferences,
+window placement) are persisted as JSON to:
 
 ```
 %APPDATA%\OpenNetRoute\settings.json
@@ -290,9 +253,5 @@ Third-party components:
 - **WinDivert** (`WinDivert.dll`, `WinDivert64.sys`) is dual-licensed
   LGPL-3.0-or-later / GPL-2.0; the binaries are used unmodified and WinDivert's
   license notices must be retained when the binaries are redistributed.
-- **Bundled UI fonts** (Geist, Geist Mono, JetBrains Mono, Plus Jakarta Sans,
-  Public Sans, Space Grotesk) are licensed under the SIL Open Font License
-  1.1 and used unmodified; each family's license text ships at
-  `src/ProxyApp/Assets/Fonts/<Family>/OFL.txt` and in the output folder.
 - The `references/TunnelX/` tree is third-party GPL material kept for study
   only; no code is copied or ported from it.
