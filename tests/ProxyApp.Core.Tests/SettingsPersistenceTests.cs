@@ -106,8 +106,18 @@ public class SettingsPersistenceTests : IDisposable
             SelectedProxyName = "Home",
             Rules =
             [
-                new ApplicationRule { ExecutableName = "firefox.exe", Mode = ProxyMode.Proxy },
-                new ApplicationRule { FolderPath = @"C:\Tools\Apps", Mode = ProxyMode.Direct, Enabled = true }
+                new ApplicationRule
+                {
+                    ExecutableName = "firefox.exe",
+                    Mode = ProxyMode.Proxy,
+                    ProxyName = "Work"
+                },
+                new ApplicationRule
+                {
+                    FolderPath = @"C:\Tools\Apps",
+                    Mode = ProxyMode.Direct,
+                    Enabled = true
+                }
             ],
             LogLevel = LogLevelConfiguration.Debug,
             Preferences = new UiPreferences
@@ -130,7 +140,9 @@ public class SettingsPersistenceTests : IDisposable
         Assert.Equal("#E81123", loaded.Preferences.AccentColorHex);
         Assert.False(loaded.Preferences.TestProxyOnSave);
         Assert.Equal("firefox.exe", loaded.Rules[0].ExecutableName);
+        Assert.Equal("Work", loaded.Rules[0].ProxyName); // per-rule proxy pin survives
         Assert.Equal(@"C:\Tools\Apps", loaded.Rules[1].FolderPath);
+        Assert.Null(loaded.Rules[1].ProxyName); // absent pin stays absent
 
         // Credentials survive the round trip in memory.
         var work = loaded.Proxies.Single(p => p.Name == "Work");

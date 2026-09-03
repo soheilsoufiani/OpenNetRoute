@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -63,6 +64,15 @@ internal sealed class TcpFerry : IDisposable
     private readonly IConnectionProcessResolver _processResolver;
     private readonly IReadOnlyList<ApplicationRule> _rules;
     private readonly ISocks5Client _socks5Client;
+
+    // ── Per-rule proxy selection ──
+    // Saved profiles by name (OrdinalIgnoreCase); a rule may pin one of them.
+    // Clients are built lazily on first use — one Socks5Client per pinned
+    // profile, the active-proxy client (_socks5Client) for everything else.
+    private readonly IReadOnlyDictionary<string, ProxyConfiguration> _proxiesByName;
+    private readonly ConcurrentDictionary<string, ISocks5Client> _clientsByName =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private readonly Action<string>? _trace;
     private readonly Action<string>? _flowClosed; // per-connection summary sink
     private IntPtr _captureHandle = IntPtr.Zero;
@@ -112,9 +122,16 @@ internal sealed class TcpFerry : IDisposable
     /// <summary>
     /// Creates a ferry with the given capture filter.
     /// </summary>
-    /// <param name="socks5Client">The SOCKS5 client used for upstream connections.</param>
+    /// <param name="socks5Client">The SOCKS5 client for default (active-proxy) routing.</param>
     /// <param name="processResolver">Optional process resolver (defaults to a pass-through that never attributes).</param>
     /// <param name="rules">Optional application rules (defaults to empty).</param>
+    /// <param name="proxies">
+    /// Optional saved proxy profiles a rule may pin by name. When a rule's
+    /// <see cref="ApplicationRule.ProxyName"/> matches one of these (case-insensitive,
+    /// enabled) profiles, its traffic is ferried through THAT profile instead of
+    /// the default client. Names that are unknown or disabled fall back to the
+    /// default client with a trace (never silent, never dropped).
+    /// </param>
     /// <param name="captureFilter">
     /// WinDivert filter string for the network-layer capture handle.
     /// Default: "outbound and ip and tcp and not loopback".
@@ -128,6 +145,7 @@ internal sealed class TcpFerry : IDisposable
         ISocks5Client socks5Client,
         IConnectionProcessResolver? processResolver = null,
         IReadOnlyList<ApplicationRule>? rules = null,
+        IEnumerable<ProxyConfiguration>? proxies = null,
         string? captureFilter = null,
         int holdTimeoutMs = DefaultHoldMs,
         TimeSpan? idleTimeout = null,
@@ -137,6 +155,10 @@ internal sealed class TcpFerry : IDisposable
         _socks5Client = socks5Client ?? throw new ArgumentNullException(nameof(socks5Client));
         _processResolver = processResolver ?? new DefaultPassThroughResolver();
         _rules = rules ?? Array.Empty<ApplicationRule>();
+        _proxiesByName = (proxies ?? Array.Empty<ProxyConfiguration>())
+            .Where(p => p is not null && !string.IsNullOrWhiteSpace(p.Name))
+            .GroupBy(p => p.Name!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         _captureFilter = captureFilter ?? "outbound and ip and tcp and not loopback";
         _idleTimeout = idleTimeout ?? DefaultIdleTimeout;
         _trace = trace;
@@ -426,12 +448,13 @@ internal sealed class TcpFerry : IDisposable
         // Pass the REAL executable path: hardcoding null here silently disabled
         // every path-based and FolderPath-bundle rule while the UI kept
         // offering them (RuleEngine matches by name OR path).
-        var mode = RuleEngine.Evaluate(_rules, processName, processInfo?.ExecutablePath);
+        var decision = RuleEngine.Decide(_rules, processName, processInfo?.ExecutablePath);
 
         Trace($"SYN src={tuple.SrcIp}:{tuple.SrcPort} dst={tuple.DstIp}:{tuple.DstPort} " +
-              $"pid={processInfo?.ProcessId} name={processName ?? "?"} mode={mode}");
+              $"pid={processInfo?.ProcessId} name={processName ?? "?"} mode={decision.Mode} " +
+              $"proxy={(string.IsNullOrWhiteSpace(decision.ProxyName) ? "default" : decision.ProxyName)}");
 
-        if (mode != ProxyMode.Proxy)
+        if (decision.Mode != ProxyMode.Proxy)
         {
             // Direct, or no matching rule — reinject unchanged.
             Trace($"SYN -> Direct (pass-through)");
@@ -439,6 +462,11 @@ internal sealed class TcpFerry : IDisposable
                 _captureHandle, buffer, readLen, IntPtr.Zero, ref addr);
             return;
         }
+
+        // The rule may pin a specific saved proxy profile; everything else
+        // (no pin, unknown name, disabled profile) routes through the default
+        // (active) proxy — ResolveClient traces any fallback.
+        var ruleClient = ResolveClient(decision.ProxyName);
 
         // Create flow state and add it to the table ATOMICALLY. With the SYN
         // handler dispatched to a background task, two retransmitted SYNs could
@@ -533,7 +561,7 @@ internal sealed class TcpFerry : IDisposable
         var destination = new Socks5Destination(tuple.DstIp.ToString(), tuple.DstPort);
         Trace($"Establishing SOCKS5 upstream to {tuple.DstIp}:{tuple.DstPort} via proxy (parallel)...");
         var connectStopwatch = Stopwatch.StartNew();
-        var upstream = await EstablishUpstreamAsync(destination, ct);
+        var upstream = await EstablishUpstreamAsync(destination, ct, ruleClient);
         connectStopwatch.Stop();
         // TotalMilliseconds (F1) — NOT ElapsedMilliseconds, which truncates
         // sub-1ms durations to 0 and hides real CONNECT latency (a 0ms line for
@@ -968,16 +996,49 @@ internal sealed class TcpFerry : IDisposable
 
 
     /// <summary>
+    /// Resolves the SOCKS5 client for a rule-pinned proxy name: the pinned
+    /// profile's client when the name matches an enabled saved proxy, otherwise
+    /// the default (active) client. Unknown/disabled names fall back WITH a
+    /// trace — a mis-pinned rule never silently changes routing behavior.
+    /// Internal for unit testing without a live WinDivert handle.
+    /// </summary>
+    internal ISocks5Client ResolveClient(string? proxyName)
+    {
+        if (string.IsNullOrWhiteSpace(proxyName))
+            return _socks5Client;
+
+        if (!_proxiesByName.TryGetValue(proxyName, out var profile))
+        {
+            Trace($"Rule proxy '{proxyName}' does not match any saved proxy — using the active proxy.");
+            return _socks5Client;
+        }
+
+        if (!profile.Enabled)
+        {
+            Trace($"Rule proxy '{proxyName}' is disabled — using the active proxy.");
+            return _socks5Client;
+        }
+
+        return _clientsByName.GetOrAdd(proxyName, _ => new Socks5Client(profile));
+    }
+
+    /// <summary>
     /// Establishes the SOCKS5 upstream connection for the held SYN. Returns the
     /// connection on success, or null when the connection failed or timed out.
     /// Exposed as internal for unit testing without a live WinDivert handle.
     /// </summary>
+    /// <param name="destination">The remote destination to reach via the proxy.</param>
+    /// <param name="ct">Cancellation for the whole operation.</param>
+    /// <param name="client">
+    /// The client to dial through; null uses the default (active-proxy) client.
+    /// </param>
     internal async Task<Socks5Connection?> EstablishUpstreamAsync(
-        Socks5Destination destination, CancellationToken ct)
+        Socks5Destination destination, CancellationToken ct, ISocks5Client? client = null)
     {
+        var dial = client ?? _socks5Client;
         try
         {
-            var conn = await _socks5Client.ConnectAsync(destination, ct);
+            var conn = await dial.ConnectAsync(destination, ct);
             Trace($"SOCKS5 CONNECT {destination.Host}:{destination.Port} OK " +
                   $"(bnd={conn.BndAddress}:{conn.BndPort})");
             return conn;

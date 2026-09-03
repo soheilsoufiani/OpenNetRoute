@@ -33,6 +33,16 @@ public sealed class ApplicationRule
     public ProxyMode Mode { get; set; }
 
     /// <summary>
+    /// Optional name of the saved proxy profile (<see cref="ApplicationSettings.Proxies"/>) this
+    /// rule routes through when <see cref="Mode"/> is <see cref="ProxyMode.Proxy"/>.
+    /// Null/empty means "Default" — the currently selected (active) proxy.
+    /// If the named profile no longer exists (deleted/renamed) or is disabled,
+    /// the engine falls back to the active proxy and traces the fallback —
+    /// the connection is never silently dropped or left direct.
+    /// </summary>
+    public string? ProxyName { get; set; }
+
+    /// <summary>
     /// Optional folder path for a bundle rule. When set, this rule matches any
     /// process whose <c>ExecutablePath</c> is located under this folder (prefix
     /// match at a directory boundary). The folder is scanned at add time for

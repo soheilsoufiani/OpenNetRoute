@@ -631,6 +631,42 @@ Pinned by `tests/ProxyApp.Core.Tests/RuleEngineTests.cs` (first-enabled-match
 wins, name/path matching, disabled-rule ignoring, no-match → Direct,
 name-vs-path precedence).
 
+### Per-rule proxy selection (authoritative)
+
+`RuleEngine.Decide` (same file, same evaluation order as above) returns a
+`RoutingDecision(Mode, ProxyName)` — the matching rule's
+`ApplicationRule.ProxyName` travels with the decision.
+
+1. `ProxyName` **null/empty** → **Default**: the traffic is ferried through the
+   currently selected (active) proxy — the profile selected on the Proxies tab.
+2. `ProxyName` set → the ferry resolves the name against the saved profiles
+   (`settings.Proxies`, **case-insensitive**). A match dials through THAT
+   profile's SOCKS5 client (one client per profile name, cached per Start).
+3. A pinned name that **matches no saved profile** or matches a **disabled**
+   profile falls back to the **active proxy** — traced as
+   `Rule proxy '…' does not match any saved proxy — using the active proxy.` /
+   `Rule proxy '…' is disabled — using the active proxy.` The connection is
+   never silently dropped or left direct.
+4. A **Direct** rule ignores its pin (it is preserved in the decision but never
+   dialed). Validation reports a Direct bundle's pin only if the name does not
+   exist (it is collected as null by the UI when Routing = Direct).
+5. Configuration validation (full-document `Validate(ApplicationSettings)`)
+   rejects a rule whose `ProxyName` matches no saved profile, so a dangling pin
+   is surfaced at Start, not just in the trace.
+
+UI: manual exe rules expose a **PROXY** column ("Default" + one entry per
+profile); folder bundles expose a **Via proxy** combo in the bundle details
+window (enabled only when Routing = Proxy). The choice list is rebuilt whenever
+a profile is added/edited (renamed)/deleted/deleted-all/pasted; rows keep their
+pin by name and snap back to Default when the name no longer exists.
+
+Pinned by `tests/ProxyApp.IntegrationTests/TcpFerryUpstreamTests.cs`
+(pinned profile dials its own SOCKS5 server while the active proxy refuses;
+unknown/disabled pins fall back to the active client with a trace;
+one cached client per profile name) and
+`tests/ProxyApp.Core.Tests/RuleEngineTests.cs` (`Decide` carries `ProxyName`
+through first-match-wins).
+
 ---
 
 # Phase 8 — DNS

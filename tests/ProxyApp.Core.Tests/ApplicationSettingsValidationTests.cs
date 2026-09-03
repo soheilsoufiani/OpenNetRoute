@@ -108,6 +108,81 @@ public class ApplicationSettingsValidationTests
         Assert.Contains(result.Errors, e => e.Contains("log level", StringComparison.OrdinalIgnoreCase));
     }
 
+    // ── Per-rule proxy pinning (ApplicationRule.ProxyName) ──
+
+    [Fact]
+    public void Rule_WithValidProxyName_IsValid()
+    {
+        var settings = ValidSettings();
+        settings.Rules[0].ProxyName = "Home";
+        settings.Proxies.Add(new ProxyConfiguration
+        {
+            Name = "Home",
+            Host = "198.51.100.7",
+            Port = 1080,
+            AuthenticationType = ProxyAuthenticationType.None,
+            Enabled = true
+        });
+
+        var result = ConfigurationValidator.Validate(settings);
+
+        Assert.True(result.IsValid, string.Join("; ", result.Errors));
+    }
+
+    [Fact]
+    public void Rule_ProxyNameMatch_IsCaseInsensitive()
+    {
+        var settings = ValidSettings();
+        settings.Rules[0].ProxyName = "home"; // saved as "Home"
+        settings.Proxies.Add(new ProxyConfiguration
+        {
+            Name = "Home",
+            Host = "198.51.100.7",
+            Port = 1080,
+            Enabled = true
+        });
+
+        var result = ConfigurationValidator.Validate(settings);
+
+        Assert.True(result.IsValid, string.Join("; ", result.Errors));
+    }
+
+    [Fact]
+    public void Rule_WithUnknownProxyName_IsInvalid()
+    {
+        var settings = ValidSettings();
+        settings.Rules[0].ProxyName = "Does-Not-Exist";
+
+        var result = ConfigurationValidator.Validate(settings);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e =>
+            e.Contains("Does-Not-Exist", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Rule_WithBlankProxyName_IsInvalid()
+    {
+        var settings = ValidSettings();
+        settings.Rules[0].ProxyName = "   ";
+
+        var result = ConfigurationValidator.Validate(settings);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("blank", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Rule_WithoutProxyName_IsValid_WithNoSavedProxies()
+    {
+        // Legacy documents: ProxyName absent means "Default" — always valid.
+        var settings = ValidSettings();
+
+        var result = ConfigurationValidator.Validate(settings);
+
+        Assert.True(result.IsValid, string.Join("; ", result.Errors));
+    }
+
     [Fact]
     public void DefaultLogLevel_IsInformation()
     {

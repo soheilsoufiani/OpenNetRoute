@@ -127,6 +127,21 @@ public static class ConfigurationValidator
         if (folderErrors is not null)
             errors.Add(folderErrors);
 
+        // A rule-pinned proxy must be a plausible profile name (non-blank if
+        // present, bounded length). Whether the name actually matches a SAVED
+        // profile can only be checked against the full settings document.
+        if (rule.ProxyName is { } proxyName)
+        {
+            if (string.IsNullOrWhiteSpace(proxyName))
+            {
+                errors.Add("Rule proxy name must not be blank when set (use null/empty for the default proxy).");
+            }
+            else if (proxyName.Length > MaxProxyNameLength)
+            {
+                errors.Add($"Rule proxy name must not exceed {MaxProxyNameLength} characters.");
+            }
+        }
+
         if (!Enum.IsDefined(rule.Mode))
             errors.Add($"Rule mode '{rule.Mode}' is not supported.");
 
@@ -188,6 +203,28 @@ public static class ConfigurationValidator
                 string.Equals(p.Name, settings.SelectedProxyName, StringComparison.OrdinalIgnoreCase)))
         {
             errors.Add($"Selected proxy '{settings.SelectedProxyName}' does not match any saved proxy.");
+        }
+
+        // ── Rule-pinned proxies must reference saved profiles ──
+        // A rule's ProxyName is resolved by the routing engine against this
+        // saved list; a dangling name would silently fall back to the active
+        // proxy at runtime, so surface it here where the user can fix it.
+        var savedProxyNames = new HashSet<string>(
+            settings.Proxies.Where(p => p is not null).Select(p => p.Name!),
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var rule in settings.Rules)
+        {
+            if (rule is null || string.IsNullOrEmpty(rule.ProxyName))
+                continue;
+
+            if (!savedProxyNames.Contains(rule.ProxyName))
+            {
+                var target = !string.IsNullOrWhiteSpace(rule.FolderPath)
+                    ? $"Bundle '{rule.FolderPath}'"
+                    : $"Rule '{rule.ExecutableName ?? "?"}'";
+                errors.Add(
+                    $"{target} routes through proxy '{rule.ProxyName}' which does not match any saved proxy.");
+            }
         }
 
         errors.AddRange(ValidatePreferences(settings.Preferences));

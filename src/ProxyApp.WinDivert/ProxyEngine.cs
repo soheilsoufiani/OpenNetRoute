@@ -89,6 +89,9 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
             // cached resolver reuses one snapshot per 50ms window.
             new CachedProcessTable(),
             settings.Rules,
+            // Saved profiles: rules may pin one by name, routing their traffic
+            // through that profile's SOCKS5 client instead of the active one.
+            proxies: settings.Proxies,
             captureFilter: "outbound and ip and tcp and not loopback",
             // DefaultHoldMs is 0: the crafted SYN-ACK is injected immediately on
             // SYN capture and the SOCKS5 CONNECT runs in parallel, so the hold

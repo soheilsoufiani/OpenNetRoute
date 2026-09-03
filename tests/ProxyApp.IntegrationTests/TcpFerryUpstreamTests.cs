@@ -119,6 +119,138 @@ public class TcpFerryUpstreamTests
         Assert.Throws<ArgumentNullException>(() => new TcpFerry(null!));
     }
 
+    // ── Per-rule proxy selection: rule-pinned profiles route through their own
+    //    SOCKS5 server; unknown/disabled pins fall back to the active proxy. ──
+
+    /// <summary>
+    /// Builds a ferry whose default proxy is <paramref name="defaultPort"/> and
+    /// whose saved-profile list contains the given profiles.
+    /// </summary>
+    private static TcpFerry MakeFerry(
+        int defaultPort,
+        IEnumerable<ProxyConfiguration> profiles,
+        IReadOnlyList<ApplicationRule>? rules = null,
+        Action<string>? trace = null)
+        => new(
+            new Socks5Client(Proxy(defaultPort)),
+            rules: rules,
+            proxies: profiles,
+            trace: trace);
+
+    [Fact]
+    public void ResolveClient_KnownEnabledProfile_IsNotTheDefaultClient()
+    {
+        using var defaultProxy = new Socks5TestServer(async (_, stream, ct) =>
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, ct: ct));
+        using var pinnedProxy = new Socks5TestServer(async (_, stream, ct) =>
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, ct: ct));
+
+        var pinned = Proxy(pinnedProxy.Port);
+        pinned.Name = "US-Proxy";
+
+        var ferry = MakeFerry(defaultProxy.Port, [pinned]);
+
+        var resolved = ferry.ResolveClient("US-Proxy");
+        Assert.NotSame(ferry.ResolveClient(null), resolved);
+    }
+
+    [Fact]
+    public async Task EstablishUpstream_RulePinnedProfile_DialsThePinnedServer()
+    {
+        // The DEFAULT proxy refuses every CONNECT; the PINNED one connects to
+        // the echo chain. If the rule's pin were ignored, the dial would go to
+        // the refusing default and return null.
+        using var refusing = new Socks5TestServer(async (_, stream, ct) =>
+            await Socks5TestServer.WriteReplyAsync(stream, 0x05, 0x01, ct: ct)); // conn refused
+        var (echo, pinned) = await StartUpstreamChainAsync();
+
+        var pinnedProfile = Proxy(pinned.Port);
+        pinnedProfile.Name = "US-Proxy";
+
+        var ferry = MakeFerry(
+            refusing.Port,
+            [pinnedProfile],
+            trace: m => Console.WriteLine(m));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var connection = await ferry.EstablishUpstreamAsync(
+            new Socks5Destination("127.0.0.1", echo.Port), cts.Token,
+            ferry.ResolveClient("US-Proxy"));
+
+        Assert.NotNull(connection);
+        connection!.Dispose();
+    }
+
+    [Fact]
+    public async Task EstablishUpstream_DefaultClient_GoesToTheActiveProxy()
+    {
+        // Mirror image of the pinned test: the ACTIVE proxy connects to the
+        // echo chain and no rule pin is involved.
+        var (echo, active) = await StartUpstreamChainAsync();
+        using var _ = active; // dispose at test end
+
+        var ferry = MakeFerry(active.Port, [], trace: m => Console.WriteLine(m));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var connection = await ferry.EstablishUpstreamAsync(
+            new Socks5Destination("127.0.0.1", echo.Port), cts.Token);
+
+        Assert.NotNull(connection);
+        connection!.Dispose();
+    }
+
+    [Fact]
+    public void ResolveClient_UnknownName_FallsBackToDefault()
+    {
+        using var defaultProxy = new Socks5TestServer(async (_, stream, ct) =>
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, ct: ct));
+
+        var traces = new List<string>();
+        var ferry = MakeFerry(defaultProxy.Port, [], trace: traces.Add);
+
+        var resolved = ferry.ResolveClient("Ghost-Proxy");
+
+        Assert.Same(ferry.ResolveClient(null), resolved);
+        Assert.Contains(traces, t => t.Contains("Ghost-Proxy") &&
+            t.Contains("does not match", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ResolveClient_DisabledProfile_FallsBackToDefault()
+    {
+        using var defaultProxy = new Socks5TestServer(async (_, stream, ct) =>
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, ct: ct));
+
+        var disabled = Proxy(1); // port irrelevant — the profile is disabled
+        disabled.Name = "Off-Proxy";
+        disabled.Enabled = false;
+
+        var traces = new List<string>();
+        var ferry = MakeFerry(defaultProxy.Port, [disabled], trace: traces.Add);
+
+        var resolved = ferry.ResolveClient("Off-Proxy");
+
+        Assert.Same(ferry.ResolveClient(null), resolved);
+        Assert.Contains(traces, t => t.Contains("Off-Proxy") &&
+            t.Contains("disabled", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ResolveClient_CachesOneClientPerProfileName()
+    {
+        using var defaultProxy = new Socks5TestServer(async (_, stream, ct) =>
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, ct: ct));
+        using var pinnedProxy = new Socks5TestServer(async (_, stream, ct) =>
+            await Socks5TestServer.WriteReplyAsync(stream, 0x00, 0x01, ct: ct));
+
+        var pinned = Proxy(pinnedProxy.Port);
+        pinned.Name = "US-Proxy";
+
+        var ferry = MakeFerry(defaultProxy.Port, [pinned]);
+
+        Assert.Same(ferry.ResolveClient("US-Proxy"), ferry.ResolveClient("us-proxy"));
+    }
+
     // ── Upstream-EOF close policy (the recv=0 hang) ──
 
     [Fact]

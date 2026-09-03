@@ -181,7 +181,7 @@
                                 <TextBlock Style="{StaticResource SectionTitle}"
                                            Text="Routing rules"/>
                                 <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,10"
-                                           Text="Assign applications to the tunnel. Running-process selections are managed in the picker; manual exe rules and folder bundles are managed here."/>
+                                           Text="Assign applications to the tunnel. Running-process selections are managed in the picker; manual exe rules and folder bundles are managed here. Each rule can pin its own proxy profile (PROXY column) or use the active proxy."/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                                     <Button x:Name="AddProcessesButton" Content="Add Running Processes…"
                                             Style="{DynamicResource AccentButton}" MinWidth="200" MinHeight="32"
@@ -234,6 +234,20 @@
                                                                    ToolTip="{Binding PathToolTip}"
                                                                    ToolTipService.InitialShowDelay="300"
                                                                    MouseLeftButtonUp="OnCopyPathTextClicked"/>
+                                                    </DataTemplate>
+                                                </GridViewColumn.CellTemplate>
+                                            </GridViewColumn>
+                                            <GridViewColumn Header="PROXY" Width="130">
+                                                <GridViewColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <!-- Per-rule proxy choice: Default (the active
+                                                             proxy) or one of the saved profiles. Bound
+                                                             by index; ProxyIndex also maintains the row's
+                                                             ProxyName for persistence. -->
+                                                        <ComboBox ItemsSource="{Binding ProxyChoices}"
+                                                                  SelectedIndex="{Binding ProxyIndex}"
+                                                                  MinWidth="112" MinHeight="22" FontSize="11"
+                                                                  ToolTip="Which proxy profile this rule routes through — 'Default' uses the active proxy selected on the Proxies tab"/>
                                                     </DataTemplate>
                                                 </GridViewColumn.CellTemplate>
                                             </GridViewColumn>

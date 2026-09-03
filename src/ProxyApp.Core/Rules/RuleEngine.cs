@@ -24,8 +24,28 @@ public static class RuleEngine
         string? processName,
         string? processPath)
     {
+        return Decide(rules, processName, processPath).Mode;
+    }
+
+    /// <summary>
+    /// Evaluates the rules against the given process name and optional path,
+    /// returning the full routing decision: the mode AND, for proxied traffic,
+    /// the saved proxy profile the rule pins (null/empty = the active proxy).
+    /// </summary>
+    /// <param name="rules">The ordered list of application rules.</param>
+    /// <param name="processName">The executable name (e.g. "chrome.exe").</param>
+    /// <param name="processPath">The full executable path, or null if unknown.</param>
+    /// <returns>
+    /// The decision of the first enabled matching rule, or
+    /// <see cref="RoutingDecision.Direct"/> if no rule matches.
+    /// </returns>
+    public static RoutingDecision Decide(
+        IReadOnlyList<ApplicationRule> rules,
+        string? processName,
+        string? processPath)
+    {
         if (rules == null || rules.Count == 0)
-            return ProxyMode.Direct;
+            return RoutingDecision.Direct;
 
         foreach (var rule in rules)
         {
@@ -33,10 +53,10 @@ public static class RuleEngine
                 continue;
 
             if (Matches(rule, processName, processPath))
-                return rule.Mode;
+                return new RoutingDecision(rule.Mode, rule.ProxyName);
         }
 
-        return ProxyMode.Direct;
+        return RoutingDecision.Direct;
     }
 
     private static bool Matches(ApplicationRule rule, string? processName, string? processPath)

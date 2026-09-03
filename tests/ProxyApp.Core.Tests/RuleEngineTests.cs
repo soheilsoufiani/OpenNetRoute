@@ -257,6 +257,77 @@ public class RuleEngineTests
         Assert.Equal(ProxyMode.Direct, RuleEngine.Evaluate(rules, "myapp.exe", null));
     }
 
+    // ── RuleEngine.Decide: per-rule proxy selection (RoutingDecision.ProxyName) ──
+
+    [Fact]
+    public void Decide_ReturnsProxyName_FromMatchingRule()
+    {
+        var rule = Rule("curl.exe");
+        rule.ProxyName = "US-Proxy";
+        var rules = new List<ApplicationRule> { rule };
+
+        var decision = RuleEngine.Decide(rules, "curl.exe", null);
+        Assert.Equal(ProxyMode.Proxy, decision.Mode);
+        Assert.Equal("US-Proxy", decision.ProxyName);
+    }
+
+    [Fact]
+    public void Decide_DefaultRule_HasNullProxyName()
+    {
+        var rules = new List<ApplicationRule> { Rule("curl.exe") };
+
+        var decision = RuleEngine.Decide(rules, "curl.exe", null);
+        Assert.Equal(ProxyMode.Proxy, decision.Mode);
+        Assert.Null(decision.ProxyName);
+    }
+
+    [Fact]
+    public void Decide_DirectRule_ProxyNameIrrelevantButPreserved()
+    {
+        var rule = Rule("game.exe", ProxyMode.Direct);
+        rule.ProxyName = "US-Proxy";
+        var rules = new List<ApplicationRule> { rule };
+
+        var decision = RuleEngine.Decide(rules, "game.exe", null);
+        Assert.Equal(ProxyMode.Direct, decision.Mode);
+        Assert.Equal("US-Proxy", decision.ProxyName);
+    }
+
+    [Fact]
+    public void Decide_FirstMatchWins_IncludingItsProxyName()
+    {
+        var first = Rule("curl.exe", ProxyMode.Direct);
+        first.ProxyName = "A";
+        var second = Rule("curl.exe", ProxyMode.Proxy);
+        second.ProxyName = "B";
+
+        var decision = RuleEngine.Decide([first, second], "curl.exe", null);
+        Assert.Equal(ProxyMode.Direct, decision.Mode);
+        Assert.Equal("A", decision.ProxyName);
+    }
+
+    [Fact]
+    public void Decide_NoMatch_ReturnsDirectWithNullProxyName()
+    {
+        var rules = new List<ApplicationRule> { Rule("chrome.exe") };
+        var decision = RuleEngine.Decide(rules, "firefox.exe", null);
+        Assert.Equal(ProxyMode.Direct, decision.Mode);
+        Assert.Null(decision.ProxyName);
+    }
+
+    [Fact]
+    public void Evaluate_And_Decide_Agree_On_Mode()
+    {
+        var pinned = Rule("curl.exe");
+        pinned.ProxyName = "P";
+        var rules = new List<ApplicationRule> { pinned, Rule("chrome.exe", ProxyMode.Direct) };
+
+        Assert.Equal(ProxyMode.Proxy, RuleEngine.Evaluate(rules, "curl.exe", null));
+        Assert.Equal(ProxyMode.Proxy, RuleEngine.Decide(rules, "curl.exe", null).Mode);
+        Assert.Equal(ProxyMode.Direct, RuleEngine.Evaluate(rules, "chrome.exe", null));
+        Assert.Equal(ProxyMode.Direct, RuleEngine.Decide(rules, "chrome.exe", null).Mode);
+    }
+
     [Fact]
     public void FolderRule_ParticipatesInListOrderPrecedence()
     {

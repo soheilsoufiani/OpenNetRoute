@@ -63,6 +63,79 @@ public sealed class ManualRuleRow : INotifyPropertyChanged
             ? "(name-only rule — matches any location)"
             : ExecutablePath + "  (click to copy)";
 
+    // ── Per-rule proxy choice ──
+    // Index 0 = "Default" (the active proxy selected on the Proxies tab);
+    // 1..N = saved profiles. ProxyChoices is shared (same list instance for
+    // every row, rebuilt by MainWindow whenever profiles change); the choice
+    // persists through CollectRulesFromUi / RestoreRulesFromSettings as
+    // ApplicationRule.ProxyName.
+    private string _proxyName = "";
+
+    /// <summary>The pinned saved-profile name; "" = Default (active proxy).</summary>
+    public string ProxyName
+    {
+        get => _proxyName;
+        set => _proxyName = value ?? "";
+    }
+
+    private int _proxyIndex;
+
+    /// <summary>SelectedIndex of the PROXY combobox (0 = Default).</summary>
+    public int ProxyIndex
+    {
+        get => _proxyIndex;
+        set
+        {
+            // Guard transient -1 while WPF reconciles a shrinking ItemsSource.
+            var v = value < 0 ? 0 : value;
+            if (_proxyIndex == v) return;
+            _proxyIndex = v;
+            ProxyName = v > 0 && v < ProxyChoices.Count ? ProxyChoices[v] : "";
+            // Raise so the row's persistence hook (ScheduleSave) fires — the
+            // user's combobox choice must reach the settings file.
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProxyIndex)));
+        }
+    }
+
+    /// <summary>
+    /// Combobox choices: "Default" plus one entry per saved profile. The list
+    /// INSTANCE is shared by every row and never replaced — MainWindow mutates
+    /// it in place (ObservableCollection) so open comboboxes stay live.
+    /// </summary>
+    public System.Collections.ObjectModel.ObservableCollection<string> ProxyChoices { get; }
+        = ProxyChoiceDefaults;
+
+    /// <summary>Shared 1-element choice list used before any profile exists.</summary>
+    public static readonly System.Collections.ObjectModel.ObservableCollection<string> ProxyChoiceDefaults = ["Default"];
+
+    /// <summary>
+    /// Re-derives the proxy choice from a profile name after the choice list
+    /// was rebuilt: keeps the pin when the name still exists, otherwise snaps
+    /// back to Default.
+    /// </summary>
+    public void SetProxyByName(string? proxyName)
+    {
+        _proxyIndex = string.IsNullOrEmpty(proxyName)
+            ? 0
+            : Math.Max(0, IndexOfIgnoreCase(proxyName));
+        ProxyName = _proxyIndex > 0 ? ProxyChoices[_proxyIndex] : "";
+    }
+
+    /// <summary>Case-insensitive scan of the shared choice list (−1 when absent).</summary>
+    private int IndexOfIgnoreCase(string name)
+    {
+        for (var i = 0; i < ProxyChoices.Count; i++)
+        {
+            if (string.Equals(ProxyChoices[i], name, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+        return -1;
+    }
+
+    /// <summary>Re-raises the selection binding after a choice-list rebuild.</summary>
+    public void RefreshProxyBindings() =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProxyIndex)));
+
     private bool _enabled = true;
 
     public bool Enabled
@@ -114,6 +187,71 @@ public sealed class BundleRow : INotifyPropertyChanged
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ModeIndex)));
         }
     }
+
+    // ── Per-bundle proxy choice (applies when ModeIndex == 0, i.e. Proxy) ──
+    // Same model as ManualRuleRow: index 0 = Default (the active proxy),
+    // 1..N = saved profiles; shared list maintained by MainWindow.
+    private string _proxyName = "";
+
+    /// <summary>The pinned saved-profile name; "" = Default (active proxy).</summary>
+    public string ProxyName
+    {
+        get => _proxyName;
+        set => _proxyName = value ?? "";
+    }
+
+    private int _proxyIndex;
+
+    /// <summary>SelectedIndex of the bundle's VIA combobox (0 = Default).</summary>
+    public int ProxyIndex
+    {
+        get => _proxyIndex;
+        set
+        {
+            // Guard transient -1 while WPF reconciles a shrinking ItemsSource.
+            var v = value < 0 ? 0 : value;
+            if (_proxyIndex == v) return;
+            _proxyIndex = v;
+            ProxyName = v > 0 && v < ProxyChoices.Count ? ProxyChoices[v] : "";
+            // Raise so the row's persistence hook (ScheduleSave) fires — the
+            // user's combobox choice must reach the settings file.
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProxyIndex)));
+        }
+    }
+
+    /// <summary>
+    /// Combobox choices: "Default" plus one entry per saved profile. Same
+    /// shared, never-replaced instance as <see cref="ManualRuleRow.ProxyChoices"/>.
+    /// </summary>
+    public System.Collections.ObjectModel.ObservableCollection<string> ProxyChoices { get; }
+        = ManualRuleRow.ProxyChoiceDefaults;
+
+    /// <summary>
+    /// Re-derives the bundle's proxy choice from a profile name after the
+    /// choice list was rebuilt (falls back to Default when the name is gone).
+    /// </summary>
+    public void SetProxyByName(string? proxyName)
+    {
+        _proxyIndex = string.IsNullOrEmpty(proxyName)
+            ? 0
+            : Math.Max(0, IndexOfIgnoreCase(proxyName));
+        ProxyName = _proxyIndex > 0 ? ProxyChoices[_proxyIndex] : "";
+    }
+
+    /// <summary>Case-insensitive scan of the shared choice list (−1 when absent).</summary>
+    private int IndexOfIgnoreCase(string name)
+    {
+        for (var i = 0; i < ProxyChoices.Count; i++)
+        {
+            if (string.Equals(ProxyChoices[i], name, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+        return -1;
+    }
+
+    /// <summary>Re-raises the selection binding after a choice-list rebuild.</summary>
+    public void RefreshProxyBindings() =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProxyIndex)));
 
     public event PropertyChangedEventHandler? PropertyChanged;
 }
@@ -533,7 +671,7 @@ public partial class MainWindow : Window
     /// (which would push the ✕ remove button out of view).
     /// </summary>
     private void OnManualRuleListSizeChanged(object sender, SizeChangedEventArgs e) =>
-        GridViewHelper.StretchPathColumn(ManualRuleList, ManualRulePathColumn, 64 + 180 + 44);
+        GridViewHelper.StretchPathColumn(ManualRuleList, ManualRulePathColumn, 64 + 180 + 130 + 44);
 
     /// <summary>
     /// Clicking a PATH cell copies the full path to the clipboard and pops the
@@ -832,6 +970,10 @@ public partial class MainWindow : Window
             p.IsSelected = ReferenceEquals(p, selected);
         _selectedProfileItem = selected;
 
+        // Populate the shared per-rule proxy choice list ("Default" + profiles)
+        // BEFORE the rules restore, so each row's saved ProxyName resolves.
+        RebuildProxyChoices();
+
         RestoreRulesFromSettings();
     }
 
@@ -851,6 +993,7 @@ public partial class MainWindow : Window
                     Enabled = rule.Enabled,
                     ModeIndex = rule.Mode == ProxyMode.Proxy ? 0 : 1
                 };
+                bundle.SetProxyByName(rule.ProxyName);
                 bundle.PropertyChanged += (_, _) => ScheduleSave();
                 _bundles.Add(bundle);
 
@@ -866,6 +1009,7 @@ public partial class MainWindow : Window
                     ExecutablePath = rule.ExecutablePath,
                     Enabled = rule.Enabled
                 };
+                manual.SetProxyByName(rule.ProxyName);
                 manual.PropertyChanged += (_, _) => ScheduleSave();
                 _manualRules.Add(manual);
             }
@@ -882,6 +1026,7 @@ public partial class MainWindow : Window
                     ExecutablePath = "",
                     Enabled = rule.Enabled
                 };
+                manual.SetProxyByName(rule.ProxyName);
                 manual.PropertyChanged += (_, _) => ScheduleSave();
                 _manualRules.Add(manual);
             }
@@ -965,6 +1110,7 @@ public partial class MainWindow : Window
         _profiles.Add(item);
         _settings.Proxies = _profiles.Select(p => p.Config).ToList();
         SelectProfile(item);
+        RebuildProxyChoices(); // the new profile becomes a rule choice
         UpdateEmptyStateHints();
 
         AutoTestIfConfigured(item);
@@ -995,6 +1141,7 @@ public partial class MainWindow : Window
         profile.Enabled = edited.Enabled;
 
         item.RefreshFromConfig();
+        RebuildProxyChoices(); // a rename changes the rule-choice entries
         AutoTestIfConfigured(item);
         SetStatus($"Updated proxy '{profile.Name}' ({MaskedUri(profile)}).");
         PersistNow();
@@ -1011,6 +1158,8 @@ public partial class MainWindow : Window
         _settings.Proxies = _profiles.Select(p => p.Config).ToList();
         if (wasSelected)
             SelectProfile(_profiles.LastOrDefault());
+        // Rules pinned to the deleted profile snap back to Default.
+        RebuildProxyChoices();
 
         UpdateEmptyStateHints();
         SetStatus($"Deleted proxy '{item.Config.Name}'.");
@@ -1044,6 +1193,7 @@ public partial class MainWindow : Window
         _selectedProfileItem = null;
         _settings.SelectedProxyName = null;
         SyncTrayState();
+        RebuildProxyChoices(); // every pinned rule snaps back to Default
 
         UpdateEmptyStateHints();
         SetStatus($"Deleted {count} proxy profile(s).");
@@ -1104,6 +1254,7 @@ public partial class MainWindow : Window
             _profiles.Add(item);
             _settings.Proxies = _profiles.Select(p => p.Config).ToList();
             SelectProfile(item);
+            RebuildProxyChoices(); // the pasted profile becomes a rule choice
             UpdateEmptyStateHints();
 
             AutoTestIfConfigured(item);
@@ -1608,6 +1759,45 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Rebuilds the shared per-rule proxy choice list ("Default" + one entry
+    /// per saved profile) and re-applies it to every manual rule and bundle
+    /// row. Rows keep their pinned profile by NAME when it still exists and
+    /// snap back to Default when it does not (e.g. the profile was deleted).
+    /// Called whenever the profile list changes: add, edit (rename), delete,
+    /// delete-all, paste, and initial restore.
+    /// </summary>
+    private void RebuildProxyChoices()
+    {
+        // Capture every row's pin BEFORE touching the shared list: clearing it
+        // makes WPF write -1 selections back (guarded), which would clobber
+        // ProxyName before SetProxyByName could restore it.
+        var manualPins = _manualRules.Select(r => (row: r, pin: r.ProxyName)).ToList();
+        var bundlePins = _bundles.Select(b => (row: b, pin: b.ProxyName)).ToList();
+
+        var shared = ManualRuleRow.ProxyChoiceDefaults;
+        shared.Clear();
+        shared.Add("Default");
+        foreach (var name in _profiles
+                     .Select(p => p.Config.Name)
+                     .Where(n => !string.IsNullOrWhiteSpace(n)))
+        {
+            shared.Add(name!);
+        }
+
+        foreach (var (row, pin) in manualPins)
+        {
+            row.SetProxyByName(pin);
+            row.RefreshProxyBindings();
+        }
+
+        foreach (var (row, pin) in bundlePins)
+        {
+            row.SetProxyByName(pin);
+            row.RefreshProxyBindings();
+        }
+    }
+
+    /// <summary>
     /// Collects the ordered rule list from the two rule sources: manual exe
     /// rules (name+path) and folder bundles. Running-process checks are NOT
     /// rules — they are the picker's pending selection and become rules only
@@ -1619,23 +1809,28 @@ public partial class MainWindow : Window
         var rules = new List<ApplicationRule>();
 
         // Manual exe rules — name + path rules (path empty for migrated
-        // name-only rules; the engine then matches by name alone).
+        // name-only rules; the engine then matches by name alone). Each rule
+        // may pin one saved proxy profile ("Default" → null = active proxy).
         rules.AddRange(_manualRules
             .Select(m => new ApplicationRule
             {
                 ExecutableName = m.ExecutableName,
                 ExecutablePath = string.IsNullOrEmpty(m.ExecutablePath) ? null : m.ExecutablePath,
                 Enabled = m.Enabled,
-                Mode = ProxyMode.Proxy
+                Mode = ProxyMode.Proxy,
+                ProxyName = string.IsNullOrEmpty(m.ProxyName) ? null : m.ProxyName
             }));
 
-        // Folder bundles â†’ folder rules.
+        // Folder bundles → folder rules. A Direct bundle ignores its proxy pin.
         rules.AddRange(_bundles
             .Select(b => new ApplicationRule
             {
                 FolderPath = b.FolderPath,
                 Enabled = b.Enabled,
-                Mode = b.ModeIndex == 0 ? ProxyMode.Proxy : ProxyMode.Direct
+                Mode = b.ModeIndex == 0 ? ProxyMode.Proxy : ProxyMode.Direct,
+                ProxyName = b.ModeIndex == 0 && !string.IsNullOrEmpty(b.ProxyName)
+                    ? b.ProxyName
+                    : null
             }));
 
         return rules;
