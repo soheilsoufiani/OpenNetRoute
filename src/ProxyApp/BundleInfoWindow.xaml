@@ -34,6 +34,38 @@
                         <ComboBoxItem Content="Proxy"/>
                         <ComboBoxItem Content="Direct"/>
                     </ComboBox>
+                    <!-- Which saved profile this bundle routes through when Routing = Proxy.
+                         'Default' = the active proxy selected on the Proxies tab.
+                         Hidden entirely when Routing = Direct (ModeIndex = 1) — the pin
+                         never applies there (persistence drops it too). -->
+                    <TextBlock Text="Via proxy:" VerticalAlignment="Center" Margin="24,0,6,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource FieldLabel}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ModeIndex}" Value="1">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <ComboBox Width="170"
+                              ItemsSource="{Binding ProxyChoices}"
+                              SelectedIndex="{Binding ProxyIndex}"
+                              ToolTip="Which proxy profile this bundle routes through — 'Default' uses the active proxy selected on the Proxies tab">
+                        <ComboBox.Style>
+                            <!-- BasedOn the implicit themed style: without it this
+                                 combo would fall back to default WPF chrome and
+                                 render white in dark mode. -->
+                            <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ModeIndex}" Value="1">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ComboBox.Style>
+                    </ComboBox>
                 </StackPanel>
             </StackPanel>
         </Border>
