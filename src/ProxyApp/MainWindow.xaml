@@ -254,7 +254,15 @@
                                             <GridViewColumn Header="" Width="44">
                                                 <GridViewColumn.CellTemplate>
                                                     <DataTemplate>
-                                                        <Button Content="✕" FontSize="10" Padding="4,0"
+                                                        <!-- Quiet icon button (the same ChipIcon style the
+                                                             folder-bundle chips use): transparent until
+                                                             hover, then the themed tint + accent glyph in
+                                                             light and dark — instead of a heavy bordered
+                                                             button competing with the row's controls.
+                                                             22px so the click target fits the taller row. -->
+                                                        <Button Style="{StaticResource ChipIcon}"
+                                                                Width="22" Height="22" FontSize="10"
+                                                                ToolTip="Remove this rule"
                                                                 Click="OnRemoveManualRuleClicked"
                                                                 Tag="{Binding}"/>
                                                     </DataTemplate>
