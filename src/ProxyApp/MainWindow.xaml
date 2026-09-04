@@ -261,6 +261,7 @@
                                                              button competing with the row's controls.
                                                              22px so the click target fits the taller row. -->
                                                         <Button Style="{StaticResource ChipIcon}"
+                                                                Content="✕"
                                                                 Width="22" Height="22" FontSize="10"
                                                                 ToolTip="Remove this rule"
                                                                 Click="OnRemoveManualRuleClicked"
