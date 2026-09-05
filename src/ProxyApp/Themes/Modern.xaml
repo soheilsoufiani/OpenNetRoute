@@ -332,7 +332,11 @@
     <Style x:Key="ChipIcon" TargetType="Button">
         <Setter Property="Width" Value="18"/>
         <Setter Property="Height" Value="18"/>
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+        <!-- Idle: muted (light gray in dark mode) so row actions don't compete
+             with content; hover: full-strength text color (white in dark mode).
+             Theme-aware: in light mode the hover glyph goes near-black because
+             white would vanish on the faint dark hover tint. -->
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Focusable" Value="False"/>
@@ -348,7 +352,8 @@
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Root" Property="Background"
                                     Value="{DynamicResource HoverTintBrush}"/>
-                            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}"/>
+                            <Setter Property="Foreground"
+                                    Value="{DynamicResource TextPrimaryBrush}"/>
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
                             <Setter Property="Opacity" Value="0.7"/>
