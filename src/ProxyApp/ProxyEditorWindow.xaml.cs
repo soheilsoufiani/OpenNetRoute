@@ -13,15 +13,18 @@ namespace ProxyApp;
 public partial class ProxyEditorWindow : Window
 {
     private readonly IProxyTester _tester;
+    private readonly bool _darkTitleBar;
 
     /// <summary>The edited profile — valid only after <see cref="DialogResult"/> is true.</summary>
     public ProxyConfiguration Profile { get; private set; } = new();
 
-    public ProxyEditorWindow(IProxyTester tester, ProxyConfiguration? initial)
+    public ProxyEditorWindow(IProxyTester tester, ProxyConfiguration? initial, UiPreferences? preferences = null)
     {
         _tester = tester ?? throw new ArgumentNullException(nameof(tester));
+        var prefs = preferences ?? new UiPreferences();
+        _darkTitleBar = ThemeApplier.IsDark(prefs.Theme);
         InitializeComponent();
-        ThemeApplier.Apply(this, new UiPreferences()); // neutral chrome; prefs applied by owner when editing
+        ThemeApplier.Apply(this, prefs); // themed with the app's saved light/dark palette
 
         initial ??= new ProxyConfiguration { Protocol = ProxyProtocol.Socks5 };
         NameBox.Text = initial.Name ?? "";
@@ -29,6 +32,13 @@ public partial class ProxyEditorWindow : Window
         PortBox.Text = initial.Port > 0 ? initial.Port.ToString() : "1080";
         UsernameBox.Text = initial.Username ?? "";
         PasswordBox.Password = initial.Password ?? "";
+    }
+
+    /// <summary>HWND exists here — the native title bar can follow the palette.</summary>
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        ThemeApplier.ApplyDarkTitleBar(this, _darkTitleBar);
     }
 
     private void OnTestClicked(object sender, RoutedEventArgs e)

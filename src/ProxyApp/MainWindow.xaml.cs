@@ -1098,8 +1098,7 @@ public partial class MainWindow : Window
 
     private void OnNewProxyClicked(object sender, RoutedEventArgs e)
     {
-        var editor = new ProxyEditorWindow(_proxyTester, null);
-        ThemeApplier.Apply(editor, _settings.Preferences);
+        var editor = new ProxyEditorWindow(_proxyTester, null, _settings.Preferences);
         editor.Owner = this;
         if (editor.ShowDialog() != true)
             return;
@@ -1125,8 +1124,7 @@ public partial class MainWindow : Window
             return;
 
         var profile = item.Config;
-        var editor = new ProxyEditorWindow(_proxyTester, profile);
-        ThemeApplier.Apply(editor, _settings.Preferences);
+        var editor = new ProxyEditorWindow(_proxyTester, profile, _settings.Preferences);
         editor.Owner = this;
         if (editor.ShowDialog() != true)
             return;
