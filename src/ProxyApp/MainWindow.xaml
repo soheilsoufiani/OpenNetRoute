@@ -145,15 +145,28 @@
                                                         </TextBlock.Style>
                                                     </TextBlock>
 
-                                                    <!-- Per-card actions (Edit / Share / Delete). -->
+                                                    <!-- Per-card actions (Edit / Share / Delete) as
+                                                         quiet icon buttons on the shared ChipIcon
+                                                         style: light gray at rest, white (themed
+                                                         full-strength text color) on hover. MDL2
+                                                         glyphs for guaranteed monochrome rendering. -->
                                                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                                                        <Button Content="Edit" Padding="8,2" MinHeight="24" FontSize="11"
+                                                        <Button Style="{StaticResource ChipIcon}"
+                                                                Content="&#xE70F;"
+                                                                Width="24" Height="24" FontSize="13"
+                                                                FontFamily="Segoe MDL2 Assets"
                                                                 ToolTip="Edit this profile"
                                                                 Tag="{Binding}" Click="OnEditProxyClicked"/>
-                                                        <Button Content="Share" Padding="8,2" MinHeight="24" FontSize="11" Margin="4,0,0,0"
+                                                        <Button Style="{StaticResource ChipIcon}"
+                                                                Content="&#xE72D;"
+                                                                Width="24" Height="24" FontSize="13"
+                                                                FontFamily="Segoe MDL2 Assets" Margin="3,0,0,0"
                                                                 ToolTip="Copy this profile as a socks5:// URL (includes credentials — paste it into Paste Config on another machine)"
                                                                 Tag="{Binding}" Click="OnShareProxyClicked"/>
-                                                        <Button Content="Delete" Padding="8,2" MinHeight="24" FontSize="11" Margin="4,0,0,0"
+                                                        <Button Style="{StaticResource ChipIcon}"
+                                                                Content="&#xE74D;"
+                                                                Width="24" Height="24" FontSize="13"
+                                                                FontFamily="Segoe MDL2 Assets" Margin="3,0,0,0"
                                                                 ToolTip="Delete this profile"
                                                                 Tag="{Binding}" Click="OnDeleteProxyClicked"/>
                                                     </StackPanel>
