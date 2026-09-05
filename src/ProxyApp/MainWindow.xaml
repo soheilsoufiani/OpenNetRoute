@@ -145,7 +145,7 @@
                                                         </TextBlock.Style>
                                                     </TextBlock>
 
-                                                    <!-- Per-card actions (Edit / Share / Delete) as
+                                                    <!-- Per-card actions (Edit / Copy / Delete) as
                                                          quiet icon buttons on the shared ChipIcon
                                                          style: light gray at rest, white on hover.
                                                          Rounded line icons (stroke paths, round
@@ -165,7 +165,7 @@
                                                         <Button Style="{StaticResource ChipIcon}" Margin="4,0,0,0"
                                                                 ToolTip="Copy this profile as a socks5:// URL (includes credentials — paste it into Paste Config on another machine)"
                                                                 Tag="{Binding}" Click="OnShareProxyClicked">
-                                                            <Path Data="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13"
+                                                            <Path Data="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-2M6 18h-2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
                                                                   Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                                                                   StrokeThickness="2" StrokeStartLineCap="Round"
                                                                   StrokeEndLineCap="Round" StrokeLineJoin="Round"
