@@ -12,6 +12,11 @@ namespace ProxyApp;
 /// </summary>
 public partial class ProxyEditorWindow : Window
 {
+    /// <summary>Protocols offered by the Type combo, in combo-item order. SOCKS5
+    /// is the only protocol the routing engine implements today; new enum values
+    /// slot in by adding an item and extending this array.</summary>
+    private static readonly ProxyProtocol[] KnownProtocols = { ProxyProtocol.Socks5 };
+
     private readonly IProxyTester _tester;
     private readonly bool _darkTitleBar;
 
@@ -32,6 +37,9 @@ public partial class ProxyEditorWindow : Window
         PortBox.Text = initial.Port > 0 ? initial.Port.ToString() : "1080";
         UsernameBox.Text = initial.Username ?? "";
         PasswordBox.Password = initial.Password ?? "";
+        // Map the profile's protocol onto the combo (index order = KnownProtocols).
+        var protocolIndex = Array.IndexOf(KnownProtocols, initial.Protocol);
+        ProtocolBox.SelectedIndex = protocolIndex < 0 ? 0 : protocolIndex;
     }
 
     /// <summary>HWND exists here — the native title bar can follow the palette.</summary>
@@ -93,7 +101,7 @@ public partial class ProxyEditorWindow : Window
 
     private ProxyConfiguration BuildProfile() => new()
     {
-        Protocol = ProxyProtocol.Socks5,
+        Protocol = SelectedProtocol(),
         Name = string.IsNullOrWhiteSpace(NameBox.Text) ? null : NameBox.Text.Trim(),
         Host = HostBox.Text.Trim(),
         Port = int.TryParse(PortBox.Text.Trim(), out var port) ? port : 0,
@@ -105,11 +113,20 @@ public partial class ProxyEditorWindow : Window
         Enabled = true
     };
 
+    /// <summary>The protocol chosen in the Type combo, mapped through
+    /// <see cref="KnownProtocols"/> (combo index order); falls back to SOCKS5.</summary>
+    private ProxyProtocol SelectedProtocol() =>
+        ProtocolBox.SelectedIndex >= 0 && ProtocolBox.SelectedIndex < KnownProtocols.Length
+            ? KnownProtocols[ProtocolBox.SelectedIndex]
+            : ProxyProtocol.Socks5;
+
     private void ShowResult(string message, bool isError)
     {
         ResultText.Text = message;
-        ResultText.Foreground = isError
-            ? System.Windows.Media.Brushes.Firebrick
-            : System.Windows.Media.Brushes.Gray;
+        // Theme-aware tokens instead of hardcoded colors so the message stays
+        // readable after a light/dark switch.
+        ResultText.SetResourceReference(
+            System.Windows.Controls.TextBlock.ForegroundProperty,
+            isError ? "DangerBrush" : "TextSecondaryBrush");
     }
 }

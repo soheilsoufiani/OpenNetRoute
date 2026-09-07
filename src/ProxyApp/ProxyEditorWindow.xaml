@@ -1,14 +1,17 @@
 <Window x:Class="ProxyApp.ProxyEditorWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Proxy Profile" Icon="/Assets/app.ico" Height="330" Width="460"
+        Title="Proxy Profile" Icon="/Assets/app.ico" Height="370" Width="400"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         ShowInTaskbar="False"
         FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True">
     <!-- Same themed dictionary as the main window: implicit TextBox/PasswordBox/
-         Button styles, FieldLabel/Hint, and the brush tokens ThemeApplier swaps
-         for the light/dark palettes. NoResize + ShowInTaskbar=False keeps this a
-         fixed-size dialog (no maximize/minimize chrome). -->
+         ComboBox/Button styles, FieldLabel/Hint, and the brush tokens ThemeApplier
+         swaps for the light/dark palettes. NoResize + ShowInTaskbar=False keeps
+         this a fixed-size dialog (no maximize/minimize chrome).
+         Layout: two columns (label + input) so EVERY field has the same width;
+         the result line and the Test/OK/Cancel buttons each get their own row at
+         the bottom, so a wrapping result can never push the buttons out of view. -->
     <Window.Resources>
         <ResourceDictionary Source="/Themes/Modern.xaml"/>
     </Window.Resources>
@@ -23,37 +26,48 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="90"/>
             <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
 
         <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" Style="{StaticResource FieldLabel}" Margin="0,0,8,6"/>
-        <TextBox x:Name="NameBox" Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,6"
+        <TextBox x:Name="NameBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,6"
                  ToolTip="Optional — defaults to host:port"/>
 
         <TextBlock Grid.Row="1" Grid.Column="0" Text="Type:" Style="{StaticResource FieldLabel}" Margin="0,0,8,6"/>
-        <TextBox Grid.Row="1" Grid.Column="1" Text="SOCKS5 (RFC 1928)" IsReadOnly="True" Margin="0,0,0,6"/>
+        <!-- Selectable protocol combo. SOCKS5 is the only protocol the routing
+             engine implements today; code-behind maps the selection onto
+             ProxyProtocol so future enum values slot in here. -->
+        <ComboBox x:Name="ProtocolBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,6"
+                  SelectedIndex="0" ToolTip="SOCKS5 (RFC 1928) is the supported protocol">
+            <ComboBoxItem Content="SOCKS5"/>
+        </ComboBox>
 
         <TextBlock Grid.Row="2" Grid.Column="0" Text="Host:" Style="{StaticResource FieldLabel}" Margin="0,0,8,6"/>
-        <TextBox x:Name="HostBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,6"/>
+        <TextBox x:Name="HostBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,6"/>
 
         <TextBlock Grid.Row="3" Grid.Column="0" Text="Port:" Style="{StaticResource FieldLabel}" Margin="0,0,8,6"/>
         <TextBox x:Name="PortBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,6" Text="1080"/>
 
         <TextBlock Grid.Row="4" Grid.Column="0" Text="Username:" Style="{StaticResource FieldLabel}" Margin="0,0,8,6"/>
-        <TextBox x:Name="UsernameBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,6"/>
+        <TextBox x:Name="UsernameBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,6"/>
 
         <TextBlock Grid.Row="5" Grid.Column="0" Text="Password:" Style="{StaticResource FieldLabel}" Margin="0,0,8,6"/>
-        <PasswordBox x:Name="PasswordBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,6"/>
+        <PasswordBox x:Name="PasswordBox" Grid.Row="5" Grid.Column="1" Margin="0,0,0,6"/>
 
-        <!-- Result line + buttons. OK carries the accent style used by the main
-             window's primary action; Test/Cancel stay quiet. -->
+        <!-- Result line gets its own full-width row (spans both columns); it can
+             wrap to two lines without disturbing the buttons below it. -->
         <TextBlock x:Name="ResultText" Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="2"
-                   Style="{StaticResource Hint}" VerticalAlignment="Center" TextWrapping="Wrap" Text=""/>
-        <StackPanel Grid.Row="7" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                   Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Text=""/>
+
+        <!-- Test / OK / Cancel on their own always-visible row. OK carries the
+             accent style used by the main window's primary action; Enter
+             confirms (IsDefault) and Esc cancels (IsCancel). -->
+        <StackPanel Grid.Row="8" Grid.Column="0" Grid.ColumnSpan="2"
+                    Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
             <Button x:Name="TestButton" Content="Test" MinWidth="86" Margin="0,0,8,0" Click="OnTestClicked"/>
             <Button Content="OK" MinWidth="86" Margin="0,0,8,0"
                     Style="{StaticResource AccentButton}" IsDefault="True" Click="OnOkClicked"/>
