@@ -165,7 +165,7 @@
                                                         <Button Style="{StaticResource ChipIcon}" Margin="4,0,0,0"
                                                                 ToolTip="Copy this profile as a socks5:// URL (includes credentials — paste it into Paste Config on another machine)"
                                                                 Tag="{Binding}" Click="OnShareProxyClicked">
-                                                            <Path Data="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-2M6 18h-2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"
+                                                            <Path Data="M8 10a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-10a2 2 0 0 1-2-2ZM4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
                                                                   Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
                                                                   StrokeThickness="2" StrokeStartLineCap="Round"
                                                                   StrokeEndLineCap="Round" StrokeLineJoin="Round"
