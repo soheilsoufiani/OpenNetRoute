@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:ProxyApp"
         mc:Ignorable="d"
         Title="Open NetRoute" Icon="/Assets/app.ico" Height="720" Width="720" MinHeight="560" MinWidth="640"
         FontFamily="Segoe UI" FontSize="12" UseLayoutRounding="True"
@@ -218,27 +219,44 @@
                                 <!-- Horizontal scrolling is disabled and the PATH
                                      column is stretched by code-behind, so long paths
                                      trim with an ellipsis and the ✕ button always stays
-                                     reachable. Clicking a path copies it. -->
+                                     reachable. Clicking a path copies it. Fixed widths:
+                                     ROUTE 70 + EXECUTABLE 150 (icon + name) + PATH 330
+                                     + PROXY 130 + remove 44. -->
                                 <Grid>
                                 <ListView x:Name="ManualRuleList" MinHeight="72" Style="{StaticResource DataList}"
                                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                           SizeChanged="OnManualRuleListSizeChanged">
                                     <ListView.View>
                                         <GridView AllowsColumnReorder="False">
-                                            <GridViewColumn Header="ROUTE" Width="64">
+                                            <GridViewColumn Header="ROUTE" Width="70">
                                                 <GridViewColumn.CellTemplate>
                                                     <DataTemplate>
-                                                        <CheckBox IsChecked="{Binding Enabled}"
-                                                                  ToolTip="Route through the SOCKS5 proxy"/>
+                                                        <!-- Proxy / Direct mode switch (the old route
+                                                             checkbox). Proxy honors the PROXY pin (or the
+                                                             active proxy); Direct passes through outside
+                                                             the proxy entirely. Persisted as Mode. -->
+                                                        <ComboBox ItemsSource="{x:Static local:ManualRuleRow.RouteChoices}"
+                                                                  SelectedIndex="{Binding ModeIndex}"
+                                                                  MinWidth="60" MinHeight="22" FontSize="11"
+                                                                  ToolTip="Proxy = route through the pinned/active proxy — Direct = pass through outside the proxy"/>
                                                     </DataTemplate>
                                                 </GridViewColumn.CellTemplate>
                                             </GridViewColumn>
-                                            <GridViewColumn Header="EXECUTABLE" Width="180">
+                                            <GridViewColumn Header="EXECUTABLE" Width="150">
                                                 <GridViewColumn.CellTemplate>
                                                     <DataTemplate>
-                                                        <TextBlock Text="{Binding ExecutableName}"
-                                                                   TextTrimming="CharacterEllipsis"
-                                                                   ToolTip="{Binding ExecutableName}"/>
+                                                        <!-- The exe's extracted icon behind the name;
+                                                             placeholder glyph for name-only rules and
+                                                             unreadable paths (empty IconSource). -->
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <Image Width="14" Height="14"
+                                                                   Source="{Binding IconSource, TargetNullValue={x:Static local:ManualRuleIconCache.PlaceholderIconSource}}"
+                                                                   VerticalAlignment="Center"/>
+                                                            <TextBlock Text="{Binding ExecutableName}"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       VerticalAlignment="Center"
+                                                                       ToolTip="{Binding ExecutableName}"/>
+                                                        </StackPanel>
                                                     </DataTemplate>
                                                 </GridViewColumn.CellTemplate>
                                             </GridViewColumn>

@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using ProxyApp.Core.Configuration;
 using ProxyApp.Core.Persistence;
@@ -52,6 +53,25 @@ public sealed class ManualRuleRow : INotifyPropertyChanged
 {
     public string ExecutableName { get; init; } = "";
     public string ExecutablePath { get; init; } = "";
+
+    // ── Row icon ──
+    // The executable's extracted icon (or the neutral placeholder when none
+    // could be resolved: name-only rules, unreadable files). Resolved
+    // asynchronously after the row is created — null until then; the XAML
+    // Image falls back to ManualRuleIconCache.PlaceholderIconSource.
+    private ImageSource? _iconSource;
+
+    /// <summary>The icon rendered behind the rule's executable name.</summary>
+    public ImageSource? IconSource
+    {
+        get => _iconSource;
+        set
+        {
+            if (ReferenceEquals(_iconSource, value)) return;
+            _iconSource = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IconSource)));
+        }
+    }
 
     /// <summary>PATH cell text: the path, or a dash for name-only rules.</summary>
     public string PathDisplay =>
@@ -150,6 +170,31 @@ public sealed class ManualRuleRow : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    // ── Route choice (Proxy / Direct) ──
+    // Index 0 = Proxy (route through the pinned or active proxy), 1 = Direct
+    // (pass through outside the proxy). Persisted as ApplicationRule.Mode by
+    // CollectRulesFromUi; the RuleEngine already treats Direct as pass-through.
+    private int _modeIndex;
+
+    /// <summary>SelectedIndex of the ROUTE combo (0 = Proxy, 1 = Direct).</summary>
+    public int ModeIndex
+    {
+        get => _modeIndex;
+        set
+        {
+            if (_modeIndex == value) return;
+            _modeIndex = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ModeIndex)));
+        }
+    }
+
+    /// <summary>
+    /// ROUTE combo choices (Proxy, Direct). A fixed list — the combo is a mode
+    /// switch, not a dynamic profile list (see <see cref="ProxyChoices"/> for
+    /// the per-rule proxy pin).
+    /// </summary>
+    public static readonly string[] RouteChoices = ["Proxy", "Direct"];
 }
 
 /// <summary>A folder bundle rule (static, survives Refresh).</summary>
@@ -587,6 +632,7 @@ public partial class MainWindow : Window
             };
             manualRow.PropertyChanged += (_, _) => ScheduleSave();
             _manualRules.Add(manualRow);
+            ResolveRuleIcon(manualRow);
             added.Add(row);
         }
 
@@ -629,6 +675,7 @@ public partial class MainWindow : Window
         };
         manualRow.PropertyChanged += (_, _) => ScheduleSave();
         _manualRules.Add(manualRow);
+        ResolveRuleIcon(manualRow);
         ScheduleSave();
         UpdateEmptyStateHints();
     }
@@ -665,13 +712,27 @@ public partial class MainWindow : Window
             : Visibility.Collapsed;
     }
 
+    // ── Manual-rule row icons ──
+
+    /// <summary>
+    /// Resolves the executable icon for a manual rule row off the UI thread
+    /// and raises <see cref="ManualRuleRow.IconSource"/> when it arrives. The
+    /// cache dedupes work per path; failures resolve to null and the XAML
+    /// falls back to the neutral placeholder glyph.
+    /// </summary>
+    private void ResolveRuleIcon(ManualRuleRow row) =>
+        Task.Run(() => ManualRuleIconCache.Instance.GetIcon(row.ExecutablePath))
+            .ContinueWith(
+                t => row.IconSource = t.IsFaulted ? null : t.Result,
+                TaskScheduler.FromCurrentSynchronizationContext());
+
     /// <summary>
     /// Keeps the PATH column stretched to the remaining list width so long
     /// paths trim with an ellipsis instead of forcing a horizontal scrollbar
     /// (which would push the ✕ remove button out of view).
     /// </summary>
     private void OnManualRuleListSizeChanged(object sender, SizeChangedEventArgs e) =>
-        GridViewHelper.StretchPathColumn(ManualRuleList, ManualRulePathColumn, 64 + 180 + 130 + 44);
+        GridViewHelper.StretchPathColumn(ManualRuleList, ManualRulePathColumn, 70 + 150 + 330 + 130 + 44);
 
     /// <summary>
     /// Clicking a PATH cell copies the full path to the clipboard and pops the
@@ -1012,6 +1073,7 @@ public partial class MainWindow : Window
                 manual.SetProxyByName(rule.ProxyName);
                 manual.PropertyChanged += (_, _) => ScheduleSave();
                 _manualRules.Add(manual);
+                ResolveRuleIcon(manual);
             }
             else if (!string.IsNullOrEmpty(rule.ExecutableName))
             {
@@ -1029,6 +1091,7 @@ public partial class MainWindow : Window
                 manual.SetProxyByName(rule.ProxyName);
                 manual.PropertyChanged += (_, _) => ScheduleSave();
                 _manualRules.Add(manual);
+                ResolveRuleIcon(manual);
             }
         }
 
@@ -1815,8 +1878,10 @@ public partial class MainWindow : Window
                 ExecutableName = m.ExecutableName,
                 ExecutablePath = string.IsNullOrEmpty(m.ExecutablePath) ? null : m.ExecutablePath,
                 Enabled = m.Enabled,
-                Mode = ProxyMode.Proxy,
-                ProxyName = string.IsNullOrEmpty(m.ProxyName) ? null : m.ProxyName
+                Mode = m.ModeIndex == 1 ? ProxyMode.Direct : ProxyMode.Proxy,
+                ProxyName = m.ModeIndex == 1 || string.IsNullOrEmpty(m.ProxyName)
+                    ? null
+                    : m.ProxyName
             }));
 
         // Folder bundles → folder rules. A Direct bundle ignores its proxy pin.
