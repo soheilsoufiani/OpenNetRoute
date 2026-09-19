@@ -1,8 +1,25 @@
 # DNS Behavior Design — Phase 8
 
-> Status: **DESIGN ONLY — no implementation yet.** This document analyzes the
-> current DNS behavior, the leak, and the design space. Implementation is
-> deliberately deferred until the approach is chosen (see §7).
+> Status: **IMPLEMENTED (2026-09-19).** The recommended path below has been
+> built: `Socks5UdpAssociateClient` (ProxyApp.Network — the RFC 1928 §7 leg,
+> unit-tested against a real loopback SOCKS5 + UDP relay peer) and
+> `UdpDnsFerry` (ProxyApp.WinDivert — the E8-a/E8-b capture/attribution/
+> injection mechanics, ported from the spikes). Opt-in via Settings → DNS.
+> Fail-closed on relay failure; loop-free (injected replies are inbound, the
+> filter is outbound-only). The remaining OPEN question is E8-c: the full
+> elevated chain against a real proxy + real resolver. DoH/DoT remains an
+> unavoidable leak — never claim otherwise.
+>
+> **Scope correction (2026-09-19, from a live ipleak.net test):** interception
+> is SYSTEM-WIDE, not per-app. Windows apps do not send DNS themselves — the
+> DNS Cache service (svchost.exe, dnscache) sends the UDP 53 query on the
+> app's behalf, so a per-process gate attributed the query to svchost,
+> found no matching rule, and passed the query through — the leak persisted
+> (the DNS test still showed the real IP). Attribution is now diagnostic-only
+> (traced), and every captured UDP 53 query is relayed while the setting is
+> enabled. **WebRTC** (STUN over UDP 3478+) also revealed the real IP in the
+> same test — arbitrary-UDP tunneling is R6, a separate phase; DoH/DoT and
+> IPv6-transport DNS remain uncovered as below.
 
 ## 1. Current behavior — the ferry leaks DNS
 

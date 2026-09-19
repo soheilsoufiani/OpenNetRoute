@@ -631,6 +631,44 @@ Pinned by `tests/ProxyApp.Core.Tests/RuleEngineTests.cs` (first-enabled-match
 wins, name/path matching, disabled-rule ignoring, no-match → Direct,
 name-vs-path precedence).
 
+### Destination rules — IP/Domain tab (authoritative)
+
+`ApplicationSettings.IpDomainRules` (the IP/Domain tab) are destination-based
+rules matched by the connection's ORIGINAL destination — evaluated BEFORE the
+process rules, via `RuleEngine.DecideAsync` (called from
+`TcpFerry.HandleNewSynAsync`, where the SYN's original `DstIp`/`DstPort` are in
+scope; the ferry intercepts the outbound SYN pre-NAT, so no original-destination
+recovery is needed).
+
+1. **Destination rules win over process rules** — they express per-destination
+   intent ("this site stays direct") and must override an app-wide pin.
+2. Match is **IPv4 only** (deliberate): an IPv6 destination never matches a
+   destination rule and falls through to the process rules.
+3. A rule matches when its `Host` is:
+   - a **strict dotted-quad IPv4 literal** (`DestinationMatch.TryParseIpv4`)
+     equal to the destination address, or
+   - a **domain** whose resolved IPv4 addresses contain the destination
+     address. Resolution goes through `IDestinationResolver`
+     (`ProxyApp.Network.DnsDestinationResolver`: system DNS, 1 s timeout,
+     single-flight, session-lifetime positive+negative cache — new instance
+     per Start, nothing survives Stop). First connection to a domain rule may
+     wait up to the timeout; **DoH/DoT applications bypass the correlation**.
+4. `Port` (optional, 1–65535) restricts the rule to one destination port;
+   null matches any. Port is pre-checked before any DNS resolution.
+5. **First enabled matching rule wins**; disabled rules are skipped; no match
+   → fall through to the process rules → default **Direct**.
+6. UI: MATCH cell is typed text `host[:port]` (e.g. `1.2.3.4`,
+   `1.2.3.4:443`, `example.com`, `example.com:8443`); ROUTE combo is the same
+   merged Disabled / Direct / Default Proxy / ── / profiles control as the
+   manual exe rules (`RouteChoiceRow`). Unparseable MATCH text is collected
+   as-is so Start-time validation surfaces it (never a silent drop).
+
+Pinned by `tests/ProxyApp.Core.Tests/IpDomainRuleTests.cs` (parser, matcher,
+destination-over-process precedence, first-match-wins, disabled skipping,
+IPv6 fall-through, resolver-based domain matching, validation) and
+`tests/ProxyApp.Network.Tests/DnsDestinationResolverTests.cs` (IPv4 filtering,
+session cache, graceful failure).
+
 ### Per-rule proxy selection (authoritative)
 
 `RuleEngine.Decide` (same file, same evaluation order as above) returns a
@@ -693,13 +731,26 @@ Analyze:
 
 Do not claim "DNS leak protection" unless it has actually been tested.
 
-> **Design status:** see `docs/DNS-DESIGN.md` (design only — no implementation
-> yet). The ferry currently leaks DNS for the dominant real-world path
-> (applications that resolve hostnames locally send UDP 53 / DoH / DoT queries
-> the ferry never intercepts). The doc analyzes local vs remote resolution,
-> UDP 53 interception via SOCKS5 UDP ASSOCIATE, why name-based CONNECT alone
-> cannot close the leak, and the unavoidable DoH/DoT limitation. Phase 8 is the
-> next correctness/security priority (CLAUDE.md priority #6).
+> **Implemented (Phase 8):** DNS interception via SOCKS5 UDP ASSOCIATE is now
+> implemented — see `docs/DNS-DESIGN.md` for the analysis and experiment
+> history. `UdpDnsFerry` (ProxyApp.WinDivert) captures outbound UDP 53
+> **system-wide** and relays each query through the active proxy's UDP
+> ASSOCIATE leg (`Socks5UdpAssociateClient`, ProxyApp.Network) to the query's
+> original DNS server, then re-injects the reply inbound, spoofed from the
+> original server (the E8-a/E8-b spike mechanics). Opt-in via Settings → DNS
+> ("Relay DNS through the proxy"). System-wide, NOT per-app: Windows sends
+> app DNS from the DNS Cache service (svchost/dnscache), so per-process
+> gating never matches the selecting app (observed live: ipleak's DNS test
+> still showed the real IP under per-app gating) — the PID attribution
+> (`ProxyApp.Processes.UdpProcessTable`) is diagnostic-only. Behavior:
+> fail-closed on relay failure (dropped, client retries; a proxy without UDP
+> support breaks system DNS while enabled — stated in the UI); loop-free
+> (injected replies are inbound, the filter is outbound-only). Residual,
+> honestly-documented limitations: DoH/DoT apps bypass packet interception;
+> DNS over IPv6 transport is not intercepted (Phase 9); WebRTC/STUN (UDP)
+> reveals the real IP until R6 UDP tunneling exists. **No "DNS leak
+> protection" claim** — validate with the E8-c elevated experiment / live
+> capture (Wireshark: no UDP 53 egress while STARTed).
 
 ---
 
@@ -1072,7 +1123,7 @@ Document third-party dependencies and their licenses.
 
 Do not copy source code from another project without checking its license and attribution requirements.
 
-If adapting concepts or code from TunnelX or another project, inspect its LICENSE and comply with its terms.
+If adapting concepts or code from [TunnelX](https://github.com/MaxiFan/TunnelX) or another project, inspect its LICENSE and comply with its terms.
 
 ---
 
@@ -1279,3 +1330,4 @@ Build this project as a real open-source networking application, not as a quick 
 Correctness, security, maintainability and testability are more important than implementing features quickly.
 
 When there are multiple possible implementations, prefer the simplest implementation that is technically correct, testable and maintainable.
+

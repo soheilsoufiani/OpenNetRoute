@@ -23,10 +23,18 @@ coverage*.xml
 *.sys
 *.dll
 !src/ProxyApp.WinDivert/**/*.dll
+!src/ProxyApp.WinDivert/Native/WinDivert64.sys
 
 # Local settings
 appsettings.local.json
 *.local.json
+
+# AI-assistant / local dev docs (kept on the machine, not published)
+CLAUDE.md
+AGENTS.md
+
+# Vendored reference material (upstream is linked in the README instead)
+references/
 
 # OS files
 Thumbs.db

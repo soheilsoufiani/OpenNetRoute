@@ -242,14 +242,21 @@ tests/
     ProxyApp.IntegrationTests/    Ferry end-to-end against a local SOCKS5 server
 docs/
     ARCHITECTURE_RESEARCH.md      Full design analysis of the ferry approach
-    DNS-DESIGN.md                 Phase 8 DNS design (status: leaks, design only)
+    DNS-DESIGN.md                 Phase 8 DNS analysis, experiments, and status
     WINDIVERT_SPIKE.md            Driver feasibility experiments and results
     LIVE_APP_SMOKE_TEST.md        Manual end-to-end smoke-test script
 spikes/
     WinDivertSpike/               Standalone experiments that validated the design
-references/
-    TunnelX/                      Reference material only — GPL-3.0-or-later; NOT copied or ported
 ```
+
+## Acknowledgments
+
+- [TunnelX](https://github.com/MaxiFan/TunnelX) (GPL-3.0-or-later) — studied
+  as reference material during the design phase; several tunnel-optimization
+  ideas (automatic MTU, DNS caching/stale-serving, Game-Mode packet tuning)
+  were inspired by its behavior. **No source code was copied or ported** —
+  this project implements everything independently for a SOCKS5-ferry
+  architecture, under MIT.
 
 ## License
 
@@ -260,8 +267,8 @@ Third-party components:
 - **WinDivert** (`WinDivert.dll`, `WinDivert64.sys`) is dual-licensed
   LGPL-3.0-or-later / GPL-2.0; the binaries are used unmodified and WinDivert's
   license notices must be retained when the binaries are redistributed.
-- The `references/TunnelX/` tree is third-party GPL material kept for study
-  only; no code is copied or ported from it.
+- [TunnelX](https://github.com/MaxiFan/TunnelX) is third-party GPL material
+  consulted for study only; no code is copied or ported from it.
 - **Icons8** — the edit and share (copy) toolbar icons are based on icons from
   [Icons8](https://icons8.com); used under the Icons8 license, which requires
   this attribution. The remaining UI icons are original path geometry.

@@ -1072,7 +1072,7 @@ Document third-party dependencies and their licenses.
 
 Do not copy source code from another project without checking its license and attribution requirements.
 
-If adapting concepts or code from TunnelX or another project, inspect its LICENSE and comply with its terms.
+If adapting concepts or code from [TunnelX](https://github.com/MaxiFan/TunnelX) or another project, inspect its LICENSE and comply with its terms.
 
 ---
 
@@ -1279,3 +1279,4 @@ Build this project as a real open-source networking application, not as a quick 
 Correctness, security, maintainability and testability are more important than implementing features quickly.
 
 When there are multiple possible implementations, prefer the simplest implementation that is technically correct, testable and maintainable.
+

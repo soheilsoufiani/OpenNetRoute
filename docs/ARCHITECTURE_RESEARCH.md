@@ -3,7 +3,7 @@
 **Status:** Research / analysis only — no implementation
 **Date:** 2026-08-20 (revised to align with `CLAUDE.md`)
 **Authoritative project instructions:** `CLAUDE.md`
-**Reference material analyzed:** `references/TunnelX/` (TunnelX v2.1.2, GPL-3.0-or-later)
+**Reference material analyzed:** [TunnelX](https://github.com/MaxiFan/TunnelX) — TunnelX v2.1.2, GPL-3.0-or-later (upstream repository; no local copy is kept in this repo)
 
 > This document is the output of a research phase. It contains **no application implementation code**, makes **no final architecture commitments**, and **does not copy** any TunnelX source. It distinguishes, throughout, between: **what we learned from TunnelX**, **what we independently propose**, **what is confirmed**, **what is still uncertain**, and **what needs to be tested experimentally**.
 
@@ -270,7 +270,7 @@ Layered, structural:
 ## 7. License Analysis
 
 **TunnelX (reference):**
-- TunnelX is **GPL-3.0-or-later** (`references/TunnelX/LICENSE`).
+- TunnelX is **GPL-3.0-or-later** — see the [upstream LICENSE](https://github.com/MaxiFan/TunnelX/blob/master/LICENSE).
 - Its bundled third-party components keep their own licenses (`THIRD_PARTY_NOTICES.md`): WinDivert (LGPL-3.0-or-later or GPL-2.0), sing-box (GPL-3.0-or-later), xray-core (MPL-2.0), Wintun (WireGuard license terms), CommunityToolkit.Mvvm (MIT), .NET/WPF (MIT), Vazirmatn font (SIL OFL 1.1).
 
 **What this means for our project:**
