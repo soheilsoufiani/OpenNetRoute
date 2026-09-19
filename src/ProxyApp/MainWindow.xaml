@@ -736,8 +736,8 @@
                                     </ListView>
 
                                     <TextBlock x:Name="EmptyUsageHint"
-                                               HorizontalAlignment="Center" VerticalAlignment="Top"
-                                               Margin="0,40,0,0"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                                               Margin="0,60,0,0"
                                                Style="{StaticResource Hint}" TextAlignment="Center"
                                                Visibility="Collapsed"
                                                Text="No usage recorded yet — history appears after the first START with traffic."/>

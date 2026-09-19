@@ -731,13 +731,19 @@ public partial class MainWindow : Window
 
         var overall = totals.Values.Aggregate((0L, 0L), (acc, v) => (acc.Item1 + v.Item1, acc.Item2 + v.Item2));
 
+        // No usage recorded anywhere (fresh install, or everything reset):
+        // the table stays EMPTY — the "No usage recorded yet" hint replaces it
+        // entirely (no "Overall 0 B" row fighting the hint).
         _usageRows.Clear();
-        _usageRows.Add(new UsageRow("Overall", overall.Item1, overall.Item2, isOverall: true));
-        foreach (var kvp in totals.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
-            _usageRows.Add(new UsageRow(kvp.Key, kvp.Value.Item1, kvp.Value.Item2, isOverall: false));
+        if (overall is not (0, 0))
+        {
+            _usageRows.Add(new UsageRow("Overall", overall.Item1, overall.Item2, isOverall: true));
+            foreach (var kvp in totals.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
+                _usageRows.Add(new UsageRow(kvp.Key, kvp.Value.Item1, kvp.Value.Item2, isOverall: false));
+        }
 
         UsageHistoryList.ItemsSource = _usageRows;
-        EmptyUsageHint.Visibility = _usageRows.Count <= 1 && overall is (0, 0)
+        EmptyUsageHint.Visibility = _usageRows.Count == 0
             ? Visibility.Visible
             : Visibility.Collapsed;
     }
