@@ -151,6 +151,59 @@ public static class ConfigurationValidator
     }
 
     /// <summary>
+    /// Validates an <see cref="IpDomainRule"/> (destination-based rule).
+    /// </summary>
+    public static ValidationResult Validate(IpDomainRule rule)
+    {
+        ArgumentNullException.ThrowIfNull(rule);
+
+        var errors = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(rule.Host))
+        {
+            errors.Add("IP/domain rule host must not be empty.");
+        }
+        else if (rule.Host.Length > MaxHostLength)
+        {
+            errors.Add($"IP/domain rule host must not exceed {MaxHostLength} characters.");
+        }
+        else if (rule.Host.IndexOf('\0') >= 0)
+        {
+            errors.Add("IP/domain rule host must not contain a null character.");
+        }
+        else if (!Rules.DestinationMatch.TryParse(rule.Host, out _, out _))
+        {
+            errors.Add(
+                $"'{rule.Host}' is not a valid destination — use an IPv4 address or a " +
+                "domain name, optionally followed by ':port' (IPv6 is not supported).");
+        }
+
+        // The parsed port (from "host:port") is already range-checked by the
+        // parser; an explicit Port property value is checked here.
+        if (rule.Port is { } port && (port < MinPort || port > MaxPort))
+            errors.Add($"Rule port must be between {MinPort} and {MaxPort}. Got {port}.");
+
+        if (rule.ProxyName is { } proxyName)
+        {
+            if (string.IsNullOrWhiteSpace(proxyName))
+            {
+                errors.Add("Rule proxy name must not be blank when set (use null/empty for the default proxy).");
+            }
+            else if (proxyName.Length > MaxProxyNameLength)
+            {
+                errors.Add($"Rule proxy name must not exceed {MaxProxyNameLength} characters.");
+            }
+        }
+
+        if (!Enum.IsDefined(rule.Mode))
+            errors.Add($"Rule mode '{rule.Mode}' is not supported.");
+
+        return errors.Count == 0
+            ? ValidationResult.Success
+            : ValidationResult.Fail(errors.ToArray());
+    }
+
+    /// <summary>
     /// Validates an <see cref="ApplicationSettings"/> collection.
     /// </summary>
     public static ValidationResult Validate(ApplicationSettings settings)
@@ -172,6 +225,23 @@ public static class ConfigurationValidator
 
         var ruleErrors = ValidateRules(settings.Rules);
         errors.AddRange(ruleErrors.Errors);
+
+        errors.AddRange(ValidateIpDomainRules(settings.IpDomainRules).Errors);
+
+        if (settings.Dns is null)
+            errors.Add("DNS settings must not be null.");
+        else if (!string.IsNullOrEmpty(settings.Dns.ResolverOverride))
+        {
+            // The override must be a strict dotted-quad IPv4 literal (the UDP
+            // ASSOCIATE relay targets an address; no resolution step exists).
+            if (!Rules.DestinationMatch.TryParseIpv4(settings.Dns.ResolverOverride, out _))
+                errors.Add(
+                    $"DNS resolver override '{settings.Dns.ResolverOverride}' is not a valid IPv4 address " +
+                    "(leave it empty to use each query's own DNS server).");
+        }
+
+        if (settings.Optimization is null)
+            errors.Add("Optimization settings must not be null.");
 
         // ── Saved proxy profiles ──
         var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -224,6 +294,20 @@ public static class ConfigurationValidator
                     : $"Rule '{rule.ExecutableName ?? "?"}'";
                 errors.Add(
                     $"{target} routes through proxy '{rule.ProxyName}' which does not match any saved proxy.");
+            }
+        }
+
+        // ── IP/domain rules: same dangling-pin check ──
+        foreach (var rule in settings.IpDomainRules)
+        {
+            if (rule is null || string.IsNullOrEmpty(rule.ProxyName))
+                continue;
+
+            if (!savedProxyNames.Contains(rule.ProxyName))
+            {
+                errors.Add(
+                    $"IP/domain rule '{rule.Host}' routes through proxy '{rule.ProxyName}' " +
+                    "which does not match any saved proxy.");
             }
         }
 
@@ -283,6 +367,66 @@ public static class ConfigurationValidator
                     {
                         errors.Add(
                             $"Conflicting rules for '{identity}': index {modes[identity]} is " +
+                            $"'{existingMode}' and index {i} is '{rule.Mode}'.");
+                    }
+                    else
+                    {
+                        modes[identity] = rule.Mode;
+                    }
+                }
+            }
+        }
+
+        return errors.Count == 0
+            ? ValidationResult.Success
+            : ValidationResult.Fail(errors.ToArray());
+    }
+
+    /// <summary>
+    /// Validates an ordered collection of IP/domain (destination) rules.
+    /// Duplicate or conflicting rules for the same host+port identity are
+    /// reported because rule precedence is evaluated in order and duplicates
+    /// are ambiguous. The identity is the parsed host plus the effective port
+    /// ("host" vs "host:port").
+    /// </summary>
+    public static ValidationResult ValidateIpDomainRules(IReadOnlyList<IpDomainRule> rules)
+    {
+        ArgumentNullException.ThrowIfNull(rules);
+
+        var errors = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var modes = new Dictionary<string, ProxyMode>(StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < rules.Count; i++)
+        {
+            var rule = rules[i];
+            if (rule is null)
+            {
+                errors.Add($"IP/domain rule at index {i} is null.");
+                continue;
+            }
+
+            var ruleErrors = Validate(rule);
+            errors.AddRange(ruleErrors.Errors);
+
+            // Only check for duplicates when the rule's identity is itself valid.
+            // The identity is the model's Host plus its (separately stored)
+            // Port — the model never embeds the port in Host.
+            if (ruleErrors.IsValid && !string.IsNullOrWhiteSpace(rule.Host))
+            {
+                var identity = rule.Port is { } port ? $"{rule.Host}:{port}" : rule.Host;
+
+                if (!seen.Add(identity))
+                {
+                    errors.Add($"Duplicate IP/domain rule for '{identity}' at index {i}.");
+                }
+                else
+                {
+                    if (modes.TryGetValue(identity, out var existingMode) &&
+                        existingMode != rule.Mode)
+                    {
+                        errors.Add(
+                            $"Conflicting IP/domain rules for '{identity}': index {modes[identity]} is " +
                             $"'{existingMode}' and index {i} is '{rule.Mode}'.");
                     }
                     else

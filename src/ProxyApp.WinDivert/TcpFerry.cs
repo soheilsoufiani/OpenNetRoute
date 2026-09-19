@@ -35,10 +35,42 @@ internal sealed class TcpFerry : IDisposable
         Environment.GetEnvironmentVariable("PROXYAPP_TRACE_PACKETS") == "1";
 
     /// <summary>
-    /// Upper clamp for the MSS the ferry advertises in its SYN-ACK (Ethernet
-    /// MTU 1500 − IP 20 − TCP 20). The client's own offer is honored below this.
+    /// Upper bound for the MSS the ferry advertises in its SYN-ACKs — 1460
+    /// (Ethernet MTU 1500 − IP 20 − TCP 20) unless auto-MTU tuning or Game
+    /// Mode lowered it (see <see cref="ApplyMssCap"/> and
+    /// <see cref="MssTuner.GameModeMss"/>).
     /// </summary>
     internal const ushort MaxAdvertisedMss = 1460;
+
+    /// <summary>
+    /// The CURRENT advertised-MSS cap (volatile: the auto-MTU probe may lower
+    /// it while flows are being created). Lower bound 536 per RFC 793.
+    /// </summary>
+    private volatile ushort _advertisedMssCap = MaxAdvertisedMss;
+
+    /// <summary>Game Mode: DSCP EF marking on injected packets.</summary>
+    private readonly bool _gameMode;
+
+    /// <summary>
+    /// Lowers the advertised-MSS cap (auto-MTU probe result / Game Mode).
+    /// Never raises it above <see cref="MaxAdvertisedMss"/>; applies to flows
+    /// created afterwards.
+    /// </summary>
+    internal void ApplyMssCap(ushort mss) =>
+        _advertisedMssCap = Math.Clamp(mss, (ushort)536, MaxAdvertisedMss);
+
+    /// <summary>
+    /// Game Mode packet tuning (TunnelX port): DSCP EF (Expedited Forwarding)
+    /// marking on IPv4 packets we inject toward the client — the ECN bits are
+    /// preserved. Must run BEFORE the checksum helper (the IPv4 header
+    /// checksum covers the TOS byte).
+    /// </summary>
+    private void ApplyGameModeDscp(byte[] packet)
+    {
+        if (!_gameMode || packet.Length < 2)
+            return;
+        packet[1] = (byte)((packet[1] & 0x03) | 0xB8); // DSCP 46 (EF) << 2
+    }
 
     /// <summary>
     /// How long the downstream pump may see a zero client window before it
@@ -63,6 +95,8 @@ internal sealed class TcpFerry : IDisposable
     private readonly TimeSpan _idleTimeout;
     private readonly IConnectionProcessResolver _processResolver;
     private readonly IReadOnlyList<ApplicationRule> _rules;
+    private readonly IReadOnlyList<IpDomainRule> _destinationRules;
+    private readonly IDestinationResolver? _destinationResolver;
     private readonly ISocks5Client _socks5Client;
 
     // ── Per-rule proxy selection ──
@@ -136,6 +170,22 @@ internal sealed class TcpFerry : IDisposable
     /// WinDivert filter string for the network-layer capture handle.
     /// Default: "outbound and ip and tcp and not loopback".
     /// </param>
+    /// <param name="destinationRules">
+    /// Optional destination-based rules (IP/domain, IPv4 only) evaluated
+    /// BEFORE <paramref name="rules"/>: the first enabled rule matching the
+    /// SYN's original destination (address, optional port, or a domain the
+    /// address resolves to) wins.
+    /// </param>
+    /// <param name="destinationResolver">
+    /// Domain resolver used by <paramref name="destinationRules"/> to match
+    /// domain rules (cached by the implementation). Null = domain rules never
+    /// match (IP-literal rules still apply).
+    /// </param>
+    /// <param name="gameMode">
+    /// Game Mode packet tuning: advertised MSS clamped to 1360 (TunnelX's
+    /// value) and DSCP EF (Expedited Forwarding) marking on packets injected
+    /// toward the client.
+    /// </param>
     /// <param name="idleTimeout">
     /// Idle timeout for proxied flows (default: 2 minutes).
     /// </param>
@@ -150,11 +200,19 @@ internal sealed class TcpFerry : IDisposable
         int holdTimeoutMs = DefaultHoldMs,
         TimeSpan? idleTimeout = null,
         Action<string>? trace = null,
-        Action<string>? flowClosed = null)
+        Action<string>? flowClosed = null,
+        IReadOnlyList<IpDomainRule>? destinationRules = null,
+        IDestinationResolver? destinationResolver = null,
+        bool gameMode = false)
     {
         _socks5Client = socks5Client ?? throw new ArgumentNullException(nameof(socks5Client));
         _processResolver = processResolver ?? new DefaultPassThroughResolver();
         _rules = rules ?? Array.Empty<ApplicationRule>();
+        _destinationRules = destinationRules ?? Array.Empty<IpDomainRule>();
+        _destinationResolver = destinationResolver;
+        _gameMode = gameMode;
+        if (gameMode)
+            _advertisedMssCap = MssTuner.GameModeMss;
         _proxiesByName = (proxies ?? Array.Empty<ProxyConfiguration>())
             .Where(p => p is not null && !string.IsNullOrWhiteSpace(p.Name))
             .GroupBy(p => p.Name!, StringComparer.OrdinalIgnoreCase)
@@ -444,11 +502,16 @@ internal sealed class TcpFerry : IDisposable
         var processInfo = _processResolver.ResolveOwner(
             tuple.SrcIp, tuple.SrcPort, tuple.DstIp, tuple.DstPort);
 
-        var processName = processInfo?.ExecutableName;
-        // Pass the REAL executable path: hardcoding null here silently disabled
-        // every path-based and FolderPath-bundle rule while the UI kept
-        // offering them (RuleEngine matches by name OR path).
-        var decision = RuleEngine.Decide(_rules, processName, processInfo?.ExecutablePath);
+var processName = processInfo?.ExecutableName;
+// Pass the REAL executable path: hardcoding null here silently disabled
+// every path-based and FolderPath-bundle rule while the UI kept
+// offering them (RuleEngine matches by name OR path).
+// Destination rules (IP/Domain tab) are evaluated first — per-destination
+// intent overrides an app-wide process pin. A domain rule may await a
+// (cached, timeout-bounded) DNS lookup here on its first connection.
+var decision = await RuleEngine.DecideAsync(
+    _destinationRules, _rules, processName, processInfo?.ExecutablePath,
+    tuple.DstIp, tuple.DstPort, _destinationResolver, ct);
 
         Trace($"SYN src={tuple.SrcIp}:{tuple.SrcPort} dst={tuple.DstIp}:{tuple.DstPort} " +
               $"pid={processInfo?.ProcessId} name={processName ?? "?"} mode={decision.Mode} " +
@@ -480,8 +543,8 @@ internal sealed class TcpFerry : IDisposable
         //    client's SYN carried one; our shift is our own choice. ──
         var synOptions = TcpPacketParser.ParseSynOptions(buffer, readLen, tuple);
         var advertisedMss = synOptions.HasMss
-            ? Math.Clamp(synOptions.Mss, (ushort)536, MaxAdvertisedMss)
-            : MaxAdvertisedMss;
+            ? Math.Clamp(synOptions.Mss, (ushort)536, _advertisedMssCap)
+            : _advertisedMssCap;
 
         var flow = new FlowState(
             flowKey, tuple.Seq, DefaultServerIsn, addr)
@@ -529,6 +592,7 @@ internal sealed class TcpFerry : IDisposable
 
         var synAddr = addr;
         synAddr.LayerEventFlags &= ~(1uL << 17); // Outbound → 0 (inbound), Impostor stays 0
+        ApplyGameModeDscp(synAck);
         WinDivertNative.WinDivertHelperCalcChecksums(synAck, (uint)synAck.Length, ref synAddr, 0);
 
         if (!WinDivertNative.WinDivertSend(
@@ -814,6 +878,7 @@ internal sealed class TcpFerry : IDisposable
 
                     var addr = flow.SynAddress;
                     addr.LayerEventFlags &= ~(1uL << 17); // Outbound → 0 (inbound), Impostor NOT set
+                    ApplyGameModeDscp(packet);
                     WinDivertNative.WinDivertHelperCalcChecksums(packet, (uint)packet.Length, ref addr, 0);
 
                     if (VerbosePackets)
@@ -980,6 +1045,7 @@ internal sealed class TcpFerry : IDisposable
 
         var addr = flow.SynAddress;
         addr.LayerEventFlags &= ~(1uL << 17); // inbound
+        ApplyGameModeDscp(fin);
         WinDivertNative.WinDivertHelperCalcChecksums(fin, (uint)fin.Length, ref addr, 0);
         Trace($"Injecting FIN|ACK to client (seq={finSeq}, ack={flow.NextClientAck})");
         if (!WinDivertNative.WinDivertSend(
@@ -1078,6 +1144,7 @@ internal sealed class TcpFerry : IDisposable
 
         var addr = flow.SynAddress;
         addr.LayerEventFlags &= ~(1uL << 17); // inbound
+        ApplyGameModeDscp(rst);
         WinDivertNative.WinDivertHelperCalcChecksums(rst, (uint)rst.Length, ref addr, 0);
         if (WinDivertNative.WinDivertSend(_captureHandle, rst, (uint)rst.Length, IntPtr.Zero, ref addr))
             Interlocked.Increment(ref _rstsInjected);
@@ -1350,6 +1417,7 @@ internal sealed class TcpFerry : IDisposable
 
         var addr = flow.SynAddress;
         addr.LayerEventFlags &= ~(1uL << 17); // inbound, Impostor NOT set
+        ApplyGameModeDscp(ack);
         WinDivertNative.WinDivertHelperCalcChecksums(ack, (uint)ack.Length, ref addr, 0);
         if (!WinDivertNative.WinDivertSend(
                 _captureHandle, ack, (uint)ack.Length, IntPtr.Zero, ref addr))

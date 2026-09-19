@@ -1,3 +1,4 @@
+using System.Net;
 using ProxyApp.Core.Configuration;
 
 namespace ProxyApp.Core.Rules;
@@ -9,6 +10,11 @@ namespace ProxyApp.Core.Rules;
 /// First enabled matching rule wins. A rule matches by executable name
 /// (case-insensitive) or by executable path (case-insensitive, full path).
 /// When no rule matches, the default is <see cref="ProxyMode.Direct"/>.
+///
+/// Destination-based rules (<see cref="IpDomainRule"/>, the IP/Domain tab) are
+/// evaluated BEFORE the process rules via <see cref="DecideAsync"/> — they
+/// express per-destination intent ("this site stays direct", "this subnet
+/// uses a specific profile") which must override an app-wide process pin.
 /// </summary>
 public static class RuleEngine
 {
@@ -57,6 +63,76 @@ public static class RuleEngine
         }
 
         return RoutingDecision.Direct;
+    }
+
+    /// <summary>
+    /// Full evaluation for one captured connection: destination rules first
+    /// (IP/domain, IPv4 only), then the process rules, then
+    /// <see cref="RoutingDecision.Direct"/>.
+    ///
+    /// Domain rules are resolved through <paramref name="destinationResolver"/>
+    /// (cached by the implementation) and match when the destination IPv4
+    /// address is one of the domain's addresses. IPv6 destinations never match
+    /// a destination rule — they fall through to the process rules. Port
+    /// pre-checks happen before any DNS resolution so a rule restricted to
+    /// another port costs nothing.
+    /// </summary>
+    /// <param name="destinationRules">Ordered destination rules (IP/Domain tab).</param>
+    /// <param name="rules">Ordered process rules (App Rules tab).</param>
+    /// <param name="processName">The executable name (e.g. "chrome.exe").</param>
+    /// <param name="processPath">The full executable path, or null if unknown.</param>
+    /// <param name="destinationIp">The connection's original destination address.</param>
+    /// <param name="destinationPort">The connection's original destination port.</param>
+    /// <param name="destinationResolver">
+    /// Domain resolver for domain rules; may be null (domain rules then never
+    /// match — only IP-literal rules apply).
+    /// </param>
+    /// <param name="ct">Cancels a pending domain resolution.</param>
+    public static async Task<RoutingDecision> DecideAsync(
+        IReadOnlyList<IpDomainRule>? destinationRules,
+        IReadOnlyList<ApplicationRule> rules,
+        string? processName,
+        string? processPath,
+        IPAddress? destinationIp,
+        int destinationPort,
+        IDestinationResolver? destinationResolver = null,
+        CancellationToken ct = default)
+    {
+        if (destinationRules is { Count: > 0 } &&
+            destinationIp is { AddressFamily: System.Net.Sockets.AddressFamily.InterNetwork })
+        {
+            foreach (var rule in destinationRules)
+            {
+                if (rule is null || !rule.Enabled)
+                    continue;
+
+                var host = rule.Host;
+                if (string.IsNullOrWhiteSpace(host))
+                    continue;
+
+                IReadOnlyList<IPAddress> resolved;
+                if (DestinationMatch.TryParseIpv4(host, out var ruleIp))
+                {
+                    // IP-literal rule — no resolution needed.
+                    resolved = new[] { ruleIp };
+                }
+                else
+                {
+                    // Domain rule — resolve (cached by the implementation).
+                    // Without a resolver a domain rule can never match.
+                    if (destinationResolver is null)
+                        continue;
+                    resolved = await destinationResolver
+                        .ResolveAsync(host, ct)
+                        .ConfigureAwait(false);
+                }
+
+                if (DestinationMatch.Matches(rule, destinationIp, destinationPort, resolved))
+                    return new RoutingDecision(rule.Mode, rule.ProxyName);
+            }
+        }
+
+        return Decide(rules, processName, processPath);
     }
 
     private static bool Matches(ApplicationRule rule, string? processName, string? processPath)

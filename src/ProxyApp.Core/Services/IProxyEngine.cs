@@ -39,4 +39,19 @@ public interface IProxyEngine : IDisposable
     /// contract as <see cref="SetTrace"/>.
     /// </summary>
     void SetFlowClosed(Action<string>? flowClosed);
+
+    /// <summary>
+    /// The last DNS-relay probe result (Phase 8): "Active" when the proxy
+    /// accepted the UDP ASSOCIATE, otherwise a failure message (typically
+    /// "the proxy does not support UDP"). Null = never probed (DNS relay
+    /// disabled, or the engine has not started yet).
+    /// </summary>
+    string? LastDnsRelayStatus { get; }
+
+    /// <summary>
+    /// Raised whenever the DNS-relay status changes: the eager probe at START
+    /// (success or failure) and background retries. May fire from background
+    /// threads — the UI must marshal. <c>ok</c> = the relay is usable.
+    /// </summary>
+    event Action<bool, string>? DnsRelayStatusChanged;
 }

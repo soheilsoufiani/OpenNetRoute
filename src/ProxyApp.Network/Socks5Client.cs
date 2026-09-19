@@ -88,7 +88,7 @@ public sealed class Socks5Client : ISocks5Client
             // is transferred to the Socks5Connection on success.
             stream = new NetworkStream(socket, ownsSocket: true);
 
-            await NegotiateAsync(stream, cancellationToken, ct).ConfigureAwait(false);
+            await NegotiateAsync(stream, _proxy, cancellationToken, ct).ConfigureAwait(false);
 
             var (bndAddress, bndPort) = await SendConnectAsync(stream, destination, cancellationToken, ct).ConfigureAwait(false);
 
@@ -108,19 +108,21 @@ public sealed class Socks5Client : ISocks5Client
     /// Performs the SOCKS5 method negotiation (RFC 1928 §3): sends the greeting,
     /// reads the server's method selection, and completes the RFC 1929
     /// username/password sub-negotiation when that method is selected.
+    /// Shared by the TCP client and the UDP ASSOCIATE client.
     /// </summary>
-    private async Task NegotiateAsync(
+    internal static async Task NegotiateAsync(
         NetworkStream stream,
+        ProxyConfiguration proxy,
         CancellationToken callerToken,
         CancellationToken ct)
     {
         // Greeting: VER(0x05), NMETHODS(1), METHODS[NMETHODS]
-        var methods = _proxy.AuthenticationType switch
+        var methods = proxy.AuthenticationType switch
         {
             ProxyAuthenticationType.None => new[] { MethodNoAuthentication },
             ProxyAuthenticationType.UsernamePassword => new[] { MethodNoAuthentication, MethodUsernamePassword },
             _ => throw new InvalidOperationException(
-                $"Unsupported authentication type '{_proxy.AuthenticationType}'.")
+                $"Unsupported authentication type '{proxy.AuthenticationType}'.")
         };
 
         var greeting = new byte[2 + methods.Length];
@@ -142,7 +144,7 @@ public sealed class Socks5Client : ISocks5Client
                 break;
 
             case MethodUsernamePassword:
-                await AuthenticateAsync(stream, callerToken, ct).ConfigureAwait(false);
+                await AuthenticateAsync(stream, proxy.Username, proxy.Password, callerToken, ct).ConfigureAwait(false);
                 break;
 
             case MethodNoAcceptable:
@@ -157,14 +159,17 @@ public sealed class Socks5Client : ISocks5Client
     /// RFC 1929 username/password sub-negotiation:
     ///   VER(0x01), ULEN(1), UNAME, PLEN(1), PASSWD
     /// The server replies VER(0x01), STATUS(1) where 0x00 = success.
+    /// Shared by the TCP client and the UDP ASSOCIATE client.
     /// </summary>
-    private async Task AuthenticateAsync(
+    internal static async Task AuthenticateAsync(
         NetworkStream stream,
+        string? username,
+        string? password,
         CancellationToken callerToken,
         CancellationToken ct)
     {
-        var username = _proxy.Username ?? string.Empty;
-        var password = _proxy.Password ?? string.Empty;
+        username ??= string.Empty;
+        password ??= string.Empty;
 
         // RFC 1929: ULEN/PLEN are single octets, so UNAME/PASSWD are each at
         // most 255 BYTES. Truncate by UTF-8 byte length (never split a
@@ -279,7 +284,7 @@ public sealed class Socks5Client : ISocks5Client
     /// Reads the BND.ADDR + BND.PORT portion of a reply given its ATYP byte.
     /// The bound address is informational (RFC 1928 clients generally ignore it).
     /// </summary>
-    private async Task<(string Address, int Port)> ReadBoundEndpointAsync(
+    internal static async Task<(string Address, int Port)> ReadBoundEndpointAsync(
         NetworkStream stream,
         byte atyp,
         CancellationToken callerToken,
@@ -318,7 +323,7 @@ public sealed class Socks5Client : ISocks5Client
         }
     }
 
-    private static async Task<int> ReadPortAsync(
+    internal static async Task<int> ReadPortAsync(
         NetworkStream stream,
         CancellationToken callerToken,
         CancellationToken ct)
@@ -335,7 +340,7 @@ public sealed class Socks5Client : ISocks5Client
     /// <see cref="TimeoutException"/> is thrown so the caller sees a useful error
     /// rather than a bare cancellation.
     /// </summary>
-    private static async Task ReadExactAsync(
+    internal static async Task ReadExactAsync(
         NetworkStream stream,
         byte[] buffer,
         CancellationToken callerToken,
@@ -363,7 +368,7 @@ public sealed class Socks5Client : ISocks5Client
         }
     }
 
-    private static async Task WriteExactAsync(
+    internal static async Task WriteExactAsync(
         NetworkStream stream,
         byte[] buffer,
         CancellationToken ct)

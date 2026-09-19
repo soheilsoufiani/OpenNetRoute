@@ -21,6 +21,7 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
     private Action<string>? _trace;
     private Action<string>? _flowClosed;
     private TcpFerry? _ferry;
+    private UdpDnsFerry? _udpDnsFerry;
 
     /// <summary>
     /// Creates the engine host. The ferry itself is only constructed when
@@ -59,8 +60,17 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
         }
     }
 
+    /// <summary>The last DNS-relay probe result ("Active" or a failure message); null = never probed.</summary>
+    public string? LastDnsRelayStatus { get; private set; }
+
+    /// <summary>
+    /// Raised whenever the DNS-relay status changes (eager probe at START,
+    /// background retries). May fire from background threads.
+    /// </summary>
+    public event Action<bool, string>? DnsRelayStatusChanged;
+
     /// <inheritdoc />
-    public bool IsRunning => _ferry?.IsRunning ?? false;
+    public bool IsRunning => _ferry?.IsRunning ?? _udpDnsFerry?.IsRunning ?? false;
 
     /// <inheritdoc />
     public void Start(ApplicationSettings settings)
@@ -81,6 +91,7 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
             throw new InvalidOperationException("The engine is already running.");
         }
 
+        var optimization = settings.Optimization ?? new OptimizationSettings();
         var ferry = new TcpFerry(
             new Socks5Client(settings.Proxy),
             // CachedProcessTable: a browser opens 30+ concurrent connections in
@@ -99,25 +110,106 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
             // compatibility but has no effect.
             holdTimeoutMs: TcpFerry.DefaultHoldMs,
             trace: _trace,
-            flowClosed: _flowClosed);
+            flowClosed: _flowClosed,
+            // Destination rules (IP/Domain tab): evaluated first, matching the
+            // SYN's original destination. The resolver caches per session and
+            // is dropped on Stop.
+            destinationRules: settings.IpDomainRules,
+            destinationResolver: new DnsDestinationResolver(),
+            // Game Mode: DSCP EF on injected packets + advertised MSS 1360.
+            gameMode: optimization.GameMode);
 
         // Throws InvalidOperationException with the WinDivert error and an
         // actionable message (e.g. "requires Administrator privileges") when
         // the capture handle cannot be opened. Never a silent failure.
         ferry.Start();
         _ferry = ferry;
+
+        // ── Automatic MTU: probe the path in the background and lower the
+        //    ferry's advertised-MSS cap to what survives (never raises it;
+        //    Game Mode's 1360 clamp already applies inside the ferry). ──
+        if (optimization.AutoMtu)
+        {
+            var probeHost = settings.Proxy.Host;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var mss = await MssTuner.TuneAsync(probeHost).ConfigureAwait(false);
+                    ferry.ApplyMssCap(mss);
+                    _trace?.Invoke($"[MTU] Auto-tuned advertised MSS={mss} (probe host={probeHost}).");
+                }
+                catch (Exception ex)
+                {
+                    _trace?.Invoke($"[MTU] Auto-tune failed (using the default MSS): {ex.Message}");
+                }
+            });
+        }
+        else
+        {
+            _trace?.Invoke("[MTU] Auto-tune disabled; using the default MSS cap.");
+        }
+
+        // Throws InvalidOperationException with the WinDivert error and an
+        // actionable message (e.g. "requires Administrator privileges") when
+        // the capture handle cannot be opened. Never a silent failure.
+        ferry.Start();
+        _ferry = ferry;
+
+        // ── Phase 8: DNS ferry (opt-in) ──
+        // When enabled, DNS queries of proxy-selected processes are relayed
+        // through the active proxy's UDP ASSOCIATE leg (see docs/DNS-DESIGN.md
+        // — the mechanics are the proven E8-a/E8-b spike results). Started
+        // only after the TCP ferry is up; a failure here must not kill a
+        // running TCP session — trace and continue without DNS interception.
+        _udpDnsFerry = null;
+        if (settings.Dns?.Enabled == true)
+        {
+            try
+            {
+                var dnsFerry = new UdpDnsFerry(
+                    settings.Dns,
+                    () => new Socks5UdpAssociateClient(settings.Proxy, trace: _trace),
+                    _trace,
+                    // Eager ASSOCIATE probe result → the UI status surface.
+                    (ok, message) =>
+                    {
+                        LastDnsRelayStatus = ok ? "Active" : message;
+                        _trace?.Invoke($"[UdpDns] {message}");
+                        DnsRelayStatusChanged?.Invoke(ok, message);
+                    },
+                    gameMode: optimization.GameMode);
+                dnsFerry.Start();
+                _udpDnsFerry = dnsFerry;
+            }
+            catch (Exception ex)
+            {
+                _trace?.Invoke($"[UdpDns] DNS interception could not start — running without it. {ex.Message}");
+            }
+        }
     }
 
     /// <inheritdoc />
     public async Task StopAsync()
     {
-        if (_ferry == null)
+        if (_ferry == null && _udpDnsFerry == null)
             return;
 
         var ferry = _ferry;
+        var dnsFerry = _udpDnsFerry;
         _ferry = null;
-        await ferry.StopAsync();
-        ferry.Dispose();
+        _udpDnsFerry = null;
+
+        if (ferry is not null)
+        {
+            await ferry.StopAsync();
+            ferry.Dispose();
+        }
+        if (dnsFerry is not null)
+        {
+            await dnsFerry.StopAsync();
+            dnsFerry.Dispose();
+        }
     }
 
     /// <inheritdoc />

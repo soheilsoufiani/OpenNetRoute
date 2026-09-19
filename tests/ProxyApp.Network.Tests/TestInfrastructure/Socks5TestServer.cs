@@ -174,8 +174,10 @@ public sealed class Socks5TestServer : IDisposable
         await ReadExactAsync(stream, request, ct);
         if (request[0] != _expectedVersion)
             throw new InvalidDataException($"Expected SOCKS version {_expectedVersion}, got {request[0]:X2}.");
-        if (request[1] != 0x01)
-            throw new InvalidDataException($"Expected CONNECT command, got 0x{request[1]:X2}.");
+        // The server serves CONNECT (0x01) and, for the UDP ASSOCIATE client
+        // tests, UDP ASSOCIATE (0x03).
+        if (request[1] is not (0x01 or 0x03))
+            throw new InvalidDataException($"Expected CONNECT or UDP ASSOCIATE command, got 0x{request[1]:X2}.");
 
         var atyp = request[3];
         string host;

@@ -37,6 +37,27 @@ public sealed class ApplicationSettings
     public List<ApplicationRule> Rules { get; set; } = new();
 
     /// <summary>
+    /// Destination-based rules (IP/domain, IPv4 only) evaluated BEFORE the
+    /// process <see cref="Rules"/>: the first enabled rule matching the
+    /// connection's destination (address, optional port, or a domain the
+    /// address resolves to) wins. Evaluated first so per-destination intent
+    /// (e.g. "this site stays direct") can override an app-wide pin.
+    /// </summary>
+    public List<IpDomainRule> IpDomainRules { get; set; } = new();
+
+    /// <summary>
+    /// DNS behavior (Phase 8): whether DNS queries of proxy-selected processes
+    /// are relayed through the active proxy (closing the DNS leak).
+    /// </summary>
+    public DnsSettings Dns { get; set; } = new();
+
+    /// <summary>
+    /// Tunnel-optimization toggles: automatic MSS/MTU adaptation and Game
+    /// Mode packet tuning.
+    /// </summary>
+    public OptimizationSettings Optimization { get; set; } = new();
+
+    /// <summary>
     /// The application-wide log level.
     /// </summary>
     public LogLevelConfiguration LogLevel { get; set; } = LogLevelConfiguration.Information;
