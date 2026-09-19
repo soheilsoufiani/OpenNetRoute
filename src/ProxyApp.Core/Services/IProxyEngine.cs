@@ -54,4 +54,13 @@ public interface IProxyEngine : IDisposable
     /// threads — the UI must marshal. <c>ok</c> = the relay is usable.
     /// </summary>
     event Action<bool, string>? DnsRelayStatusChanged;
+
+    /// <summary>
+    /// A snapshot of the CURRENT session's traffic accounting: overall
+    /// uploaded/downloaded bytes plus a per-configuration breakdown (pinned
+    /// rules bucket under the pinned profile; active-proxy flows under the
+    /// active profile's name). All zeros when the engine is not running.
+    /// Never throws; cheap enough to poll once per second.
+    /// </summary>
+    UsageSnapshot GetUsageSnapshot();
 }

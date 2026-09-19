@@ -15,6 +15,17 @@ picture.
 
 - **Per-application SOCKS5 routing** — TCP connections of selected apps are
   routed through the proxy; all other traffic is untouched.
+- **IP/domain destination rules** — route or stay direct by destination IPv4
+  (optional port) or domain (DNS-resolved); evaluated before the app rules.
+- **DNS relay (closes the DNS leak)** — outbound DNS (UDP 53) is relayed
+  through the proxy's UDP ASSOCIATE leg to a public resolver of your choice
+  (Cloudflare/Google/Quad9/transparent); optional STUN relay so WebRTC reports
+  the proxy's IP. Needs a UDP-capable proxy.
+- **Data Usage tab** — live up/down speed (bytes/s, once a second) and a
+  cumulative per-configuration history (uploaded / downloaded / total),
+  persisted across restarts.
+- **Tunnel optimization** — automatic MTU (interface MTU + don't-fragment
+  probes adapt the advertised MSS) and Game Mode (DSCP EF marking + MSS 1360).
 - **Application rules with icons** — each rule row shows the executable's own
   icon behind its name (a neutral placeholder for name-only rules).
 - **Proxy profiles** — multiple SOCKS5 servers, paste

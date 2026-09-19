@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using ProxyApp.Core.Configuration;
 using ProxyApp.Core.Processes;
 using ProxyApp.Core.Rules;
+using ProxyApp.Core.Services;
 using ProxyApp.Network;
 
 namespace ProxyApp.WinDivert;
@@ -72,6 +73,57 @@ internal sealed class TcpFerry : IDisposable
         packet[1] = (byte)((packet[1] & 0x03) | 0xB8); // DSCP 46 (EF) << 2
     }
 
+    // ── Per-configuration usage accounting (Data Usage tab) ──
+
+    /// <summary>
+    /// Resolves the usage bucket for a flow's routing decision: the pinned
+    /// profile when it EXISTS and is enabled (mirrors ResolveClient's
+    /// fallback), otherwise the ACTIVE proxy's name.
+    /// </summary>
+    private string ResolveUsageBucket(string? proxyName) =>
+        !string.IsNullOrWhiteSpace(proxyName) &&
+        _proxiesByName.TryGetValue(proxyName, out var profile) &&
+        profile.Enabled
+            ? proxyName
+            : _activeProxyName;
+
+    private void AddUpstreamBytes(FlowState flow, long bytes)
+    {
+        // flow.ProxyName is the ALREADY-resolved bucket (set at flow creation).
+        var bucket = flow.ProxyName ?? "";
+        _bytesByProfile.AddOrUpdate(
+            bucket,
+            new ProfileUsage(bytes, 0),
+            (_, p) => new ProfileUsage(p.UpBytes + bytes, p.DownBytes));
+        Interlocked.Add(ref _bytesRelayedUpstream, bytes);
+    }
+
+    private void AddDownstreamBytes(FlowState flow, long bytes)
+    {
+        var bucket = flow.ProxyName ?? "";
+        _bytesByProfile.AddOrUpdate(
+            bucket,
+            new ProfileUsage(0, bytes),
+            (_, p) => new ProfileUsage(p.UpBytes, p.DownBytes + bytes));
+        Interlocked.Add(ref _bytesRelayedToClient, bytes);
+    }
+
+    /// <summary>
+    /// A snapshot of the CURRENT session's usage: overall up/down totals plus
+    /// the per-configuration buckets — both updated live at relay time, so
+    /// polling once per second gives accurate speeds.
+    /// </summary>
+    public UsageSnapshot GetUsageSnapshot()
+    {
+        var byProfile = new Dictionary<string, ProfileUsage>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kvp in _bytesByProfile)
+            byProfile[kvp.Key] = kvp.Value;
+        return new UsageSnapshot(
+            Interlocked.Read(ref _bytesRelayedUpstream),
+            Interlocked.Read(ref _bytesRelayedToClient),
+            byProfile);
+    }
+
     /// <summary>
     /// How long the downstream pump may see a zero client window before it
     /// proceeds anyway (legacy behavior) instead of waiting forever — a safety
@@ -109,6 +161,14 @@ internal sealed class TcpFerry : IDisposable
 
     private readonly Action<string>? _trace;
     private readonly Action<string>? _flowClosed; // per-connection summary sink
+    private readonly string _activeProxyName;
+
+    // ── Per-configuration usage accounting (Data Usage tab) ──
+    // Byte buckets keyed by the proxy profile each flow was dialed through:
+    // a pinned rule under the pinned name, everything else under the ACTIVE
+    // profile's name. Updated at the same Interlocked sites as the session
+    // totals — both are live.
+    private readonly ConcurrentDictionary<string, ProfileUsage> _bytesByProfile = new(StringComparer.OrdinalIgnoreCase);
     private IntPtr _captureHandle = IntPtr.Zero;
     private CancellationTokenSource? _cts;
     private Task? _captureLoop;
@@ -203,7 +263,8 @@ internal sealed class TcpFerry : IDisposable
         Action<string>? flowClosed = null,
         IReadOnlyList<IpDomainRule>? destinationRules = null,
         IDestinationResolver? destinationResolver = null,
-        bool gameMode = false)
+        bool gameMode = false,
+        string? activeProxyName = null)
     {
         _socks5Client = socks5Client ?? throw new ArgumentNullException(nameof(socks5Client));
         _processResolver = processResolver ?? new DefaultPassThroughResolver();
@@ -211,6 +272,7 @@ internal sealed class TcpFerry : IDisposable
         _destinationRules = destinationRules ?? Array.Empty<IpDomainRule>();
         _destinationResolver = destinationResolver;
         _gameMode = gameMode;
+        _activeProxyName = activeProxyName ?? "";
         if (gameMode)
             _advertisedMssCap = MssTuner.GameModeMss;
         _proxiesByName = (proxies ?? Array.Empty<ProxyConfiguration>())
@@ -554,6 +616,7 @@ var decision = await RuleEngine.DecideAsync(
             Status = FlowStatus.Connecting,
             ClientWindowShift = synOptions.WindowScale,
             AdvertisedMss = advertisedMss,
+            ProxyName = ResolveUsageBucket(decision.ProxyName),
             ServerWindowShift = synOptions.HasWindowScale
                 ? TcpPacketBuilder.FerryWindowScaleShift
                 : (byte)0
@@ -726,7 +789,7 @@ var decision = await RuleEngine.DecideAsync(
                       $"(ClientBytesSent already includes them)");
                 await upstream.Stream.WriteAsync(buffered, ct);
                 flow.BytesFlushedFromBuffer += buffered.Length;
-                Interlocked.Add(ref _bytesRelayedUpstream, buffered.Length);
+                AddUpstreamBytes(flow, buffered.Length);
                 flow.Touch();
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -916,7 +979,7 @@ var decision = await RuleEngine.DecideAsync(
 
                     flow.ClientBytesRecv += take;
                     Interlocked.Add(ref _bytesRelayedToClient, take);
-                    flow.Touch();
+                    AddDownstreamBytes(flow, take);                    flow.Touch();
                     sent += take;
                 }
             }
@@ -1380,7 +1443,7 @@ var decision = await RuleEngine.DecideAsync(
             Trace($"Relay client→upstream {relayNewLen} bytes (total sent={flow.ClientBytesSent + relayNewLen})");
             await flow.UpstreamStream.WriteAsync(payload2, ct);
             flow.ClientBytesSent += relayNewLen;
-            Interlocked.Add(ref _bytesRelayedUpstream, relayNewLen);
+            AddUpstreamBytes(flow, relayNewLen);
             flow.Touch();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

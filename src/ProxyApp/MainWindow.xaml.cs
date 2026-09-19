@@ -434,6 +434,44 @@ public sealed class BundleRow : INotifyPropertyChanged
 }
 
 /// <summary>
+/// One row of the Data Usage history table: cumulative per-configuration
+/// counters (persisted history MERGED with the running session), refreshed
+/// in place by the 1-second usage timer.
+/// </summary>
+public sealed class UsageRow : INotifyPropertyChanged
+{
+    public UsageRow(string name, long up, long down, bool isOverall)
+    {
+        Name = name;
+        _up = up;
+        _down = down;
+        IsOverall = isOverall;
+    }
+
+    public string Name { get; }
+    public bool IsOverall { get; }
+
+    private long _up;
+    private long _down;
+
+    public string UpDisplay => ByteFormatter.Format(_up);
+    public string DownDisplay => ByteFormatter.Format(_down);
+    public string TotalDisplay => ByteFormatter.Format(_up + _down);
+
+    /// <summary>Replaces the counters and refreshes all display bindings.</summary>
+    public void Update(long up, long down)
+    {
+        _up = up;
+        _down = down;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(UpDisplay)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DownDisplay)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TotalDisplay)));
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+}
+
+/// <summary>
 /// Main window. Communicates with the engine ONLY through
 /// <see cref="IProxyEngine"/>, with processes only through
 /// <see cref="IProcessEnumerator"/>, and with persistence only through
@@ -567,7 +605,215 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<IpDomainRuleRow> _ipDomainRules = new();
     private readonly ObservableCollection<BundleRow> _bundles = new();
     private readonly ObservableCollection<ProfileItem> _profiles = new();
+    private readonly ObservableCollection<UsageRow> _usageRows = new();
     private readonly LogPanel _logPanel;
+
+    // ── Data usage accounting (Data Usage tab) ──
+    // The persisted per-configuration history (usage.json) + the 1-second
+    // live sampler. The ENGINE flushes its session into the store on STOP —
+    // the timer here only adds a periodic crash-safety flush (deltas only, so
+    // nothing double-counts) and drives the speed display.
+    private readonly IUsageStatsStore _usageStore = new JsonUsageStatsStore();
+    private readonly DispatcherTimer _usageTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private IReadOnlyList<UsageStatsEntry> _usageHistory = [];
+    private UsageSnapshot? _lastSample;
+    private DateTime _lastSampleAt;
+    private long _flushedUp;
+    private long _flushedDown;
+
+    /// <summary>Bytes/s derived from the last two samples (for the live cards).</summary>
+    private (long Up, long Down, long Total) ComputeRates(UsageSnapshot current, DateTime now)
+    {
+        if (_lastSample is null || _lastSampleAt == default)
+            return (0, 0, 0);
+        var dt = (now - _lastSampleAt).TotalSeconds;
+        if (dt <= 0)
+            return (0, 0, 0);
+        return (
+            (long)((current.UpBytes - _lastSample.UpBytes) / dt),
+            (long)((current.DownBytes - _lastSample.DownBytes) / dt),
+            (long)((current.TotalBytes - _lastSample.TotalBytes) / dt));
+    }
+
+    private bool _usageWasRunning;
+    private int _usageTick;
+
+    // ── Data Usage tab: 1-second sampler + history merge ──
+
+    private void InitializeUsageTab()
+    {
+        _usageHistory = _usageStore.Load();
+        RebuildUsageRows(UsageSnapshot.Empty);
+        _usageTimer.Tick += (_, _) => OnUsageTimerTick();
+        _usageTimer.Start();
+    }
+
+    /// <summary>The 1-second tick: speeds, session totals, live history rows, periodic flush.</summary>
+    private void OnUsageTimerTick()
+    {
+        var running = _engine.IsRunning;
+        var snapshot = _engine.GetUsageSnapshot();
+        var now = DateTime.UtcNow;
+
+        // Session restart detection: totals shrank → a new START — reset the
+        // sampling baseline AND the flush baselines (otherwise the new
+        // session's deltas would compute against the old session's totals
+        // and undercount).
+        if (_lastSample is not null && snapshot.TotalBytes < _lastSample.TotalBytes)
+        {
+            _lastSample = null;
+            _flushedUp = 0;
+            _flushedDown = 0;
+            _flushedBuckets.Clear();
+        }
+
+        var rates = running ? ComputeRates(snapshot, now) : (0L, 0L, 0L);
+        UpSpeedText.Text = ByteFormatter.FormatRate(rates.Item1);
+        DownSpeedText.Text = ByteFormatter.FormatRate(rates.Item2);
+        TotalSpeedText.Text = ByteFormatter.FormatRate(rates.Item3);
+
+        if (running)
+        {
+            SessionTotalsText.Text =
+                $"This session: {ByteFormatter.Format(snapshot.UpBytes)} up, " +
+                $"{ByteFormatter.Format(snapshot.DownBytes)} down " +
+                $"({ByteFormatter.Format(snapshot.TotalBytes)} total).";
+            if (_engine.LastDnsRelayStatus is { } dns)
+                SessionTotalsText.Text += $"  DNS relay: {dns}";
+        }
+        else
+        {
+            SessionTotalsText.Text = _usageWasRunning
+                ? "Stopped — the session's totals were added to the history."
+                : "Tracking starts the moment you press START.";
+        }
+
+        UpdateUsageRows(running ? snapshot : UsageSnapshot.Empty);
+
+        // Crash-safety: flush the session's deltas once a minute while running,
+        // and the FINAL delta when the engine just stopped.
+        if (running)
+        {
+            if (++_usageTick % 60 == 0)
+                FlushUsageDeltas(snapshot);
+        }
+        else if (_usageWasRunning)
+        {
+            FlushUsageDeltas(_lastSample ?? UsageSnapshot.Empty);
+        }
+
+        _lastSample = snapshot;
+        _lastSampleAt = now;
+        _usageWasRunning = running;
+    }
+
+    /// <summary>
+    /// Rebuilds/updates the history rows = persisted records MERGED with the
+    /// current session snapshot, Overall first. Existing rows are updated in
+    /// place (no list churn each second).
+    /// </summary>
+    private void RebuildUsageRows(UsageSnapshot session)
+    {
+        var totals = new Dictionary<string, (long Up, long Down)>(StringComparer.OrdinalIgnoreCase);
+
+        // Persisted history + live session (only when the engine runs; after a
+        // STOP the session is already in the history via the final flush).
+        foreach (var e in _usageHistory)
+            totals[e.Name] = (e.UpBytes, e.DownBytes);
+        if (session.TotalBytes > 0)
+        {
+            foreach (var kvp in session.ByProfile)
+            {
+                var cur = totals.TryGetValue(kvp.Key, out var t) ? t : (0, 0);
+                totals[kvp.Key] = (cur.Item1 + kvp.Value.UpBytes, cur.Item2 + kvp.Value.DownBytes);
+            }
+        }
+
+        var overall = totals.Values.Aggregate((0L, 0L), (acc, v) => (acc.Item1 + v.Item1, acc.Item2 + v.Item2));
+
+        _usageRows.Clear();
+        _usageRows.Add(new UsageRow("Overall", overall.Item1, overall.Item2, isOverall: true));
+        foreach (var kvp in totals.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
+            _usageRows.Add(new UsageRow(kvp.Key, kvp.Value.Item1, kvp.Value.Item2, isOverall: false));
+
+        UsageHistoryList.ItemsSource = _usageRows;
+        EmptyUsageHint.Visibility = _usageRows.Count <= 1 && overall is (0, 0)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    /// <summary>In-place counter refresh (no rebuild) — called every tick.</summary>
+    private void UpdateUsageRows(UsageSnapshot session)
+    {
+        if (ReferenceEquals(session, UsageSnapshot.Empty) && _usageRows.Count == 0)
+            return;
+
+        // Cheap diff: if the union of names is unchanged, update in place;
+        // otherwise rebuild (a new profile appeared).
+        var names = session.ByProfile.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var known = _usageRows.Where(r => !r.IsOverall).Select(r => r.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!names.SetEquals(known))
+        {
+            RebuildUsageRows(session);
+            return;
+        }
+
+        foreach (var row in _usageRows)
+        {
+            if (row.IsOverall)
+                row.Update(session.UpBytes, session.DownBytes);
+            else if (session.ByProfile.TryGetValue(row.Name, out var u))
+                row.Update(u.UpBytes, u.DownBytes);
+        }
+    }
+
+    /// <summary>
+    /// Persists the session's UNFLUSHED delta (never the full snapshot —
+    /// merging deltas repeatedly cannot double-count). Called by the 60 s
+    /// crash-safety timer, on engine stop, and on window close.
+    /// </summary>
+    private void FlushUsageDeltas(UsageSnapshot snapshot)
+    {
+        var deltaUp = snapshot.UpBytes - _flushedUp;
+        var deltaDown = snapshot.DownBytes - _flushedDown;
+
+        // Per-profile deltas: subtract the previously flushed amount per
+        // bucket (the ferry's buckets are exact, so deltas stay exact).
+        var perProfileDelta = new Dictionary<string, ProfileUsage>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kvp in snapshot.ByProfile)
+        {
+            var prev = _flushedBuckets.TryGetValue(kvp.Key, out var p) ? p : new ProfileUsage(0, 0);
+            var dUp = kvp.Value.UpBytes - prev.UpBytes;
+            var dDown = kvp.Value.DownBytes - prev.DownBytes;
+            if (dUp > 0 || dDown > 0)
+                perProfileDelta[kvp.Key] = new ProfileUsage(dUp, dDown);
+        }
+
+        if (perProfileDelta.Count == 0 && deltaUp <= 0 && deltaDown <= 0)
+            return;
+
+        var effective = perProfileDelta.Count > 0
+            ? new UsageSnapshot(Math.Max(0, deltaUp), Math.Max(0, deltaDown), perProfileDelta)
+            : UsageSnapshot.Empty;
+
+        _usageHistory = UsageStatsMerger.Merge(_usageHistory, effective);
+        try
+        {
+            _usageStore.Save(_usageHistory);
+        }
+        catch (Exception ex)
+        {
+            _logPanel.Log("WARN", $"[Usage] History flush failed (will retry): {ex.Message}");
+        }
+
+        _flushedUp = snapshot.UpBytes;
+        _flushedDown = snapshot.DownBytes;
+        _flushedBuckets = snapshot.ByProfile.ToDictionary(
+            kvp => kvp.Key, kvp => kvp.Value, StringComparer.OrdinalIgnoreCase);
+        RebuildUsageRows(_engine.IsRunning ? snapshot : UsageSnapshot.Empty);
+    }
+
+    private Dictionary<string, ProfileUsage> _flushedBuckets = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// False until the constructor finishes <see cref="InitializeComponent"/>
@@ -640,6 +886,10 @@ public partial class MainWindow : Window
         _engine.SetTrace(_logPanel.Append);
         _engine.SetFlowClosed(_logPanel.Append);
         _logPanel.Log("INFO", "Engine trace + flow-summary sinks wired.");
+
+        // Data Usage tab: load the persisted history + start the 1-second
+        // sampler (speeds + live history merge + periodic delta flushes).
+        InitializeUsageTab();
 
         // DNS-relay status (eager UDP-ASSOCIATE probe at START + retries):
         // surface failures loudly — a proxy without UDP support otherwise
@@ -2518,6 +2768,15 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        // Final usage flush — the running session's unflushed delta is never
+        // lost on close (the engine keeps its counters until Dispose).
+        try
+        {
+            if (_engine.IsRunning)
+                FlushUsageDeltas(_engine.GetUsageSnapshot());
+        }
+        catch { /* best-effort — the periodic flush is the safety net */ }
+
         // Final persistence flush — state is never lost on close.
         try
         {

@@ -44,6 +44,14 @@ internal sealed class FlowState
     /// <summary>The owning PID, resolved at SYN-capture time.</summary>
     public int ProcessId { get; set; }
 
+    /// <summary>
+    /// The proxy configuration (profile) name this flow's traffic is
+    /// attributed to for usage accounting: the pinned profile when the
+    /// routing decision resolved to one, otherwise the ACTIVE proxy's name
+    /// ("" when unknown — counted under Overall only). Set at flow creation.
+    /// </summary>
+    public string? ProxyName { get; set; }
+
     // ── Parallel-establishment state ──
 
     /// <summary>

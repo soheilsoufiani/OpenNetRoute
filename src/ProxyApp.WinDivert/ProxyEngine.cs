@@ -117,7 +117,10 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
             destinationRules: settings.IpDomainRules,
             destinationResolver: new DnsDestinationResolver(),
             // Game Mode: DSCP EF on injected packets + advertised MSS 1360.
-            gameMode: optimization.GameMode);
+            gameMode: optimization.GameMode,
+            // Per-configuration usage accounting: active-proxy flows bucket
+            // under the active profile's name (Data Usage tab).
+            activeProxyName: settings.SelectedProxyName);
 
         // Throws InvalidOperationException with the WinDivert error and an
         // actionable message (e.g. "requires Administrator privileges") when
@@ -187,6 +190,15 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
                 _trace?.Invoke($"[UdpDns] DNS interception could not start — running without it. {ex.Message}");
             }
         }
+    }
+
+    /// <inheritdoc />
+    public UsageSnapshot GetUsageSnapshot()
+    {
+        var ferry = _ferry;
+        return ferry is not null && ferry.IsRunning
+            ? ferry.GetUsageSnapshot()
+            : UsageSnapshot.Empty;
     }
 
     /// <inheritdoc />

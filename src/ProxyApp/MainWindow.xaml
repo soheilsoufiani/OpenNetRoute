@@ -624,6 +624,130 @@
                 </ScrollViewer>
             </TabItem>
 
+            <!-- ═══ TAB: DATA USAGE ═══ -->
+            <TabItem Header="Data Usage">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+                    <StackPanel MaxWidth="720" HorizontalAlignment="Center" Margin="0,0,0,16">
+
+                        <!-- ── Live (current session) ── -->
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="Live — current session"/>
+                                <TextBlock x:Name="UsageActiveProfileHint" Style="{StaticResource Hint}"
+                                           TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="Tracking starts the moment you press START."/>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" HorizontalAlignment="Center">
+                                        <TextBlock x:Name="UpSpeedText" Text="0 B/s"
+                                                   FontSize="20" FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                        <TextBlock Text="▲ upload" Style="{StaticResource Hint}"
+                                                   HorizontalAlignment="Center"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" HorizontalAlignment="Center">
+                                        <TextBlock x:Name="DownSpeedText" Text="0 B/s"
+                                                   FontSize="20" FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                        <TextBlock Text="▼ download" Style="{StaticResource Hint}"
+                                                   HorizontalAlignment="Center"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" HorizontalAlignment="Center">
+                                        <TextBlock x:Name="TotalSpeedText" Text="0 B/s"
+                                                   FontSize="20" FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                        <TextBlock Text="Σ total" Style="{StaticResource Hint}"
+                                                   HorizontalAlignment="Center"/>
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock x:Name="SessionTotalsText" Style="{StaticResource Hint}"
+                                           TextWrapping="Wrap" TextAlignment="Center"
+                                           Text="This session: 0 B up, 0 B down (0 B total)."/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- ── History (per configuration, all sessions) ── -->
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="History — per configuration"/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="Cumulative traffic per proxy configuration across all sessions (merged live with the running session). Counters are keyed by the configuration's name."/>
+                                <Grid>
+                                    <ListView x:Name="UsageHistoryList" MinHeight="72" Style="{StaticResource DataList}"
+                                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                        <ListView.View>
+                                            <GridView AllowsColumnReorder="False">
+                                                <GridViewColumn Header="CONFIGURATION" Width="200">
+                                                    <GridViewColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Name}"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       VerticalAlignment="Center">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Foreground"
+                                                                                Value="{DynamicResource TextPrimaryBrush}"/>
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding IsOverall}" Value="True">
+                                                                                <Setter Property="FontWeight" Value="Bold"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </DataTemplate>
+                                                    </GridViewColumn.CellTemplate>
+                                                </GridViewColumn>
+                                                <GridViewColumn Header="UPLOADED" Width="130">
+                                                    <GridViewColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding UpDisplay}"
+                                                                       HorizontalAlignment="Right" Margin="0,0,12,0"/>
+                                                        </DataTemplate>
+                                                    </GridViewColumn.CellTemplate>
+                                                </GridViewColumn>
+                                                <GridViewColumn Header="DOWNLOADED" Width="130">
+                                                    <GridViewColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding DownDisplay}"
+                                                                       HorizontalAlignment="Right" Margin="0,0,12,0"/>
+                                                        </DataTemplate>
+                                                    </GridViewColumn.CellTemplate>
+                                                </GridViewColumn>
+                                                <GridViewColumn Header="TOTAL" Width="130">
+                                                    <GridViewColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding TotalDisplay}"
+                                                                       HorizontalAlignment="Right" Margin="0,0,12,0"/>
+                                                        </DataTemplate>
+                                                    </GridViewColumn.CellTemplate>
+                                                </GridViewColumn>
+                                            </GridView>
+                                        </ListView.View>
+                                    </ListView>
+
+                                    <TextBlock x:Name="EmptyUsageHint"
+                                               HorizontalAlignment="Center" VerticalAlignment="Top"
+                                               Margin="0,40,0,0"
+                                               Style="{StaticResource Hint}" TextAlignment="Center"
+                                               Visibility="Collapsed"
+                                               Text="No usage recorded yet — history appears after the first START with traffic."/>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <!-- ═══ TAB: SETTINGS ═══ -->
             <TabItem Header="Settings">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
