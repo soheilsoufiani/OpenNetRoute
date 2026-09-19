@@ -200,9 +200,9 @@
                         <Border Style="{StaticResource CardStyle}">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}"
-                                           Text="Routing rules"/>
+                                           Text="Application rules"/>
                                 <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,10"
-                                           Text="Assign applications to the tunnel. Running-process selections are managed in the picker; manual exe rules and folder bundles are managed here. Each rule can pin its own proxy profile (PROXY column) or use the active proxy."/>
+                                           Text="Assign applications to the tunnel. Running-process selections are managed in the picker; manual exe rules and folder bundles are managed here. Each rule can pin its own proxy profile in the ROUTE column (or use the active proxy)."/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                                     <Button x:Name="AddProcessesButton" Content="Add Running Processes…"
                                             Style="{DynamicResource AccentButton}" MinWidth="200" MinHeight="32"
@@ -220,47 +220,54 @@
                                      column is stretched by code-behind, so long paths
                                      trim with an ellipsis and the ✕ button always stays
                                      reachable. Clicking a path copies it. Fixed widths:
-                                     ROUTE 70 + EXECUTABLE 150 (icon + name) + PATH 330
-                                     + PROXY 130 + remove 44. -->
+                                     EXECUTABLE 130 (icon + ~16 chars, hover shows the
+                                     full name) + PATH 330 (stretched) + ROUTE 130
+                                     + remove 44 — together they fit the default
+                                     window's list width so ROUTE and ✕ stay visible. -->
                                 <Grid>
                                 <ListView x:Name="ManualRuleList" MinHeight="72" Style="{StaticResource DataList}"
                                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                           SizeChanged="OnManualRuleListSizeChanged">
                                     <ListView.View>
                                         <GridView AllowsColumnReorder="False">
-                                            <GridViewColumn Header="ROUTE" Width="70">
-                                                <GridViewColumn.CellTemplate>
-                                                    <DataTemplate>
-                                                        <!-- Proxy / Direct mode switch (the old route
-                                                             checkbox). Proxy honors the PROXY pin (or the
-                                                             active proxy); Direct passes through outside
-                                                             the proxy entirely. Persisted as Mode. -->
-                                                        <ComboBox ItemsSource="{x:Static local:ManualRuleRow.RouteChoices}"
-                                                                  SelectedIndex="{Binding ModeIndex}"
-                                                                  MinWidth="60" MinHeight="22" FontSize="11"
-                                                                  ToolTip="Proxy = route through the pinned/active proxy — Direct = pass through outside the proxy"/>
-                                                    </DataTemplate>
-                                                </GridViewColumn.CellTemplate>
-                                            </GridViewColumn>
-                                            <GridViewColumn Header="EXECUTABLE" Width="150">
+                                            <GridViewColumn Header="EXECUTABLE" Width="130">
                                                 <GridViewColumn.CellTemplate>
                                                     <DataTemplate>
                                                         <!-- The exe's extracted icon behind the name;
                                                              placeholder glyph for name-only rules and
-                                                             unreadable paths (empty IconSource). -->
+                                                             unreadable paths (empty IconSource). The name
+                                                             trims at the ~16-character column width and the
+                                                             tooltip reveals the full name. A row routed as
+                                                             Disabled is dimmed and struck through. -->
                                                         <StackPanel Orientation="Horizontal">
                                                             <Image Width="14" Height="14"
                                                                    Source="{Binding IconSource, TargetNullValue={x:Static local:ManualRuleIconCache.PlaceholderIconSource}}"
                                                                    VerticalAlignment="Center"/>
                                                             <TextBlock Text="{Binding ExecutableName}"
+                                                                       Margin="6,0,0,0"
                                                                        TextTrimming="CharacterEllipsis"
                                                                        VerticalAlignment="Center"
-                                                                       ToolTip="{Binding ExecutableName}"/>
+                                                                       ToolTip="{Binding ExecutableName}">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Foreground"
+                                                                                Value="{DynamicResource TextPrimaryBrush}"/>
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding IsDisabled}" Value="True">
+                                                                                <Setter Property="Foreground"
+                                                                                        Value="{DynamicResource TextSecondaryBrush}"/>
+                                                                                <Setter Property="TextDecorations"
+                                                                                        Value="Strikethrough"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
                                                         </StackPanel>
                                                     </DataTemplate>
                                                 </GridViewColumn.CellTemplate>
                                             </GridViewColumn>
-                                            <GridViewColumn x:Name="ManualRulePathColumn" Header="PATH" Width="360">
+                                            <GridViewColumn x:Name="ManualRulePathColumn" Header="PATH" Width="330">
                                                 <GridViewColumn.CellTemplate>
                                                     <DataTemplate>
                                                         <!-- No Hand cursor: the cursor must stay the normal
@@ -275,17 +282,34 @@
                                                     </DataTemplate>
                                                 </GridViewColumn.CellTemplate>
                                             </GridViewColumn>
-                                            <GridViewColumn Header="PROXY" Width="130">
+                                            <GridViewColumn Header="ROUTE" Width="130">
                                                 <GridViewColumn.CellTemplate>
                                                     <DataTemplate>
-                                                        <!-- Per-rule proxy choice: Default (the active
-                                                             proxy) or one of the saved profiles. Bound
-                                                             by index; ProxyIndex also maintains the row's
-                                                             ProxyName for persistence. -->
-                                                        <ComboBox ItemsSource="{Binding ProxyChoices}"
-                                                                  SelectedIndex="{Binding ProxyIndex}"
-                                                                  MinWidth="112" MinHeight="22" FontSize="11"
-                                                                  ToolTip="Which proxy profile this rule routes through — 'Default' uses the active proxy selected on the Proxies tab"/>
+                                                        <!-- One compact combo at the right edge of the
+                                                             list for everything: Disabled (rule
+                                                             inactive — dimmed + struck through), Direct
+                                                             (pass through outside the proxy), Default
+                                                             Proxy (the active proxy on the Proxies tab),
+                                                             a non-selectable separator, one entry per
+                                                             saved proxy profile (pinning it for this
+                                                             rule). Persisted as Enabled / Mode /
+                                                             ProxyName. -->
+                                                        <ComboBox ItemsSource="{x:Static local:RouteChoiceRow.SharedRouteChoices}"
+                                                                  SelectedIndex="{Binding ModeIndex}"
+                                                                  SelectionChanged="OnRouteComboSelectionChanged" MinWidth="118" MinHeight="22" FontSize="11"
+                                                                  ToolTip="Disabled = rule inactive — Direct = pass through outside the proxy — Default Proxy = the active proxy selected on the Proxies tab — pick a profile to pin it for this rule">
+                                                            <ComboBox.ItemContainerStyle>
+                                                                <Style TargetType="ComboBoxItem"
+                                                                       BasedOn="{StaticResource {x:Type ComboBoxItem}}">
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding}"
+                                                                                     Value="{x:Static local:RouteChoiceRow.RouteSeparator}">
+                                                                            <Setter Property="IsEnabled" Value="False"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </ComboBox.ItemContainerStyle>
+                                                        </ComboBox>
                                                     </DataTemplate>
                                                 </GridViewColumn.CellTemplate>
                                             </GridViewColumn>
@@ -293,7 +317,7 @@
                                                 <GridViewColumn.CellTemplate>
                                                     <DataTemplate>
                                                         <!-- Quiet icon button (the same ChipIcon style the
-                                                             folder-bundle chips use): transparent until
+                                                             proxy config cards use): transparent until
                                                              hover, then the themed tint + accent glyph in
                                                              light and dark — instead of a heavy bordered
                                                              button competing with the row's controls.
@@ -345,27 +369,41 @@
                                             MouseLeftButtonUp="OnBundleChipClicked"
                                             ToolTip="Click: enable / disable — Shift+click: details">
                                         <Grid>
-                                            <TextBlock Text="{Binding DisplayName}"
-                                                       VerticalAlignment="Center"
-                                                       HorizontalAlignment="Left"
-                                                       FontSize="11"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       ToolTip="{Binding FolderPath}">
-                                                <TextBlock.Style>
-                                                    <Style TargetType="TextBlock">
-                                                        <Setter Property="Foreground"
-                                                                Value="{DynamicResource TextPrimaryBrush}"/>
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding Enabled}" Value="False">
-                                                                <Setter Property="Foreground"
-                                                                        Value="{DynamicResource TextSecondaryBrush}"/>
-                                                                <Setter Property="TextDecorations"
-                                                                        Value="Strikethrough"/>
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </TextBlock.Style>
-                                            </TextBlock>
+                                            <StackPanel Orientation="Horizontal"
+                                                        VerticalAlignment="Center"
+                                                        HorizontalAlignment="Left"
+                                                        ToolTip="{Binding FolderPath}">
+                                                <!-- Folder glyph ahead of the bundle name
+                                                     (Segoe MDL2 Assets folder icon). The name
+                                                     caps at ~8 characters and trims with an
+                                                     ellipsis; the tooltip shows the full path. -->
+                                                <TextBlock FontFamily="Segoe MDL2 Assets"
+                                                           Text="&#xE8B7;"
+                                                           FontSize="12"
+                                                           VerticalAlignment="Center"
+                                                           Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                                <TextBlock Text="{Binding DisplayName}"
+                                                           Margin="6,0,0,0"
+                                                           VerticalAlignment="Center"
+                                                           FontSize="11"
+                                                           MaxWidth="48"
+                                                           TextTrimming="CharacterEllipsis">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground"
+                                                                    Value="{DynamicResource TextPrimaryBrush}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding Enabled}" Value="False">
+                                                                    <Setter Property="Foreground"
+                                                                            Value="{DynamicResource TextSecondaryBrush}"/>
+                                                                    <Setter Property="TextDecorations"
+                                                                            Value="Strikethrough"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </StackPanel>
 
                                             <StackPanel x:Name="ChipTools" Orientation="Horizontal"
                                                         HorizontalAlignment="Right" VerticalAlignment="Top"
@@ -397,62 +435,315 @@
                 </ScrollViewer>
             </TabItem>
 
+            <!-- ═══ TAB: IP / DOMAIN RULES ═══ -->
+            <TabItem Header="IP/Domain Rules">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="IP &amp; domain routing rules"/>
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,10" TextWrapping="Wrap"
+                                           Text="Destination rules — evaluated BEFORE the App Rules, so per-destination intent overrides an app-wide pin. MATCH is an IPv4 address or a domain, optionally with a port (1.2.3.4, 1.2.3.4:443, example.com, example.com:8443). Fields are locked: click Edit to type, then Save (or Cancel to discard). IPv6 destinations never match; a domain is resolved through DNS at connection time (cached) — DoH/DoT applications bypass it."/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <Button x:Name="AddIpDomainRuleButton" Content="Add IP or Domain…"
+                                            Style="{DynamicResource AccentButton}" MinWidth="200" MinHeight="32"
+                                            ToolTip="Add a destination rule row — type the IP or domain in the MATCH cell"
+                                            Click="OnAddIpDomainRuleClicked"/>
+                                </StackPanel>
+
+                                <Grid>
+                                    <ListView x:Name="IpDomainRuleList" MinHeight="72" Style="{StaticResource DataList}"
+                                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                              SizeChanged="OnIpDomainListSizeChanged">
+                                        <ListView.View>
+                                        <GridView AllowsColumnReorder="False">
+                                            <GridViewColumn x:Name="IpDomainMatchColumn" Header="MATCH" Width="180">
+                                                <GridViewColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <!-- Typed match: IPv4 or domain, optional
+                                                             ':port'. LOCKED (read-only) until the row's
+                                                             Edit button unlocks it; Save commits and
+                                                             re-locks, Cancel restores. The field STRETCHES
+                                                             to fill the MATCH column (stretched by
+                                                             code-behind so no dead space remains after the
+                                                             tools); accent border while unlocked. -->
+                                                        <TextBox Text="{Binding MatchText, UpdateSourceTrigger=PropertyChanged}"
+                                                                 MinHeight="22" FontSize="11"
+                                                                 Padding="4,0" VerticalContentAlignment="Center"
+                                                                 ToolTip="IPv4 address or domain, optionally ':port' — e.g. 1.2.3.4, 1.2.3.4:443, example.com, example.com:8443">
+                                                            <TextBox.Style>
+                                                                <Style TargetType="TextBox"
+                                                                       BasedOn="{StaticResource {x:Type TextBox}}">
+                                                                    <Setter Property="IsReadOnly" Value="True"/>
+                                                                    <Setter Property="BorderBrush"
+                                                                            Value="{DynamicResource InputBorderBrush}"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsEditing}" Value="True">
+                                                                            <Setter Property="IsReadOnly" Value="False"/>
+                                                                            <Setter Property="BorderBrush"
+                                                                                    Value="{DynamicResource AccentBrush}"/>
+                                                                        </DataTrigger>
+                                                                        <!-- Red border wins over the accent while
+                                                                             editing: the text failed Save's
+                                                                             validation and was NOT committed. -->
+                                                                        <DataTrigger Binding="{Binding IsInvalid}" Value="True">
+                                                                            <Setter Property="BorderBrush"
+                                                                                    Value="{DynamicResource DangerBrush}"/>
+                                                                            <Setter Property="Foreground"
+                                                                                    Value="{DynamicResource DangerBrush}"/>
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding IsDisabled}" Value="True">
+                                                                            <Setter Property="Foreground"
+                                                                                    Value="{DynamicResource TextSecondaryBrush}"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBox.Style>
+                                                        </TextBox>
+                                                    </DataTemplate>
+                                                </GridViewColumn.CellTemplate>
+                                            </GridViewColumn>
+                                                <GridViewColumn Header="ROUTE" Width="130">
+                                                    <GridViewColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <!-- Same merged ROUTE combo as the manual
+                                                                 exe rules: Disabled, Direct, Default
+                                                                 Proxy, separator, saved profiles. -->
+                                                            <ComboBox ItemsSource="{x:Static local:RouteChoiceRow.SharedRouteChoices}"
+                                                                      SelectedIndex="{Binding ModeIndex}"
+                                                                      SelectionChanged="OnRouteComboSelectionChanged" MinWidth="118" MinHeight="22" FontSize="11"
+                                                                      ToolTip="Disabled = rule inactive — Direct = pass through outside the proxy — Default Proxy = the active proxy selected on the Proxies tab — pick a profile to pin it for this rule">
+                                                                <ComboBox.ItemContainerStyle>
+                                                                    <Style TargetType="ComboBoxItem"
+                                                                           BasedOn="{StaticResource {x:Type ComboBoxItem}}">
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding}"
+                                                                                         Value="{x:Static local:RouteChoiceRow.RouteSeparator}">
+                                                                                <Setter Property="IsEnabled" Value="False"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </ComboBox.ItemContainerStyle>
+                                                            </ComboBox>
+                                                        </DataTemplate>
+                                                    </GridViewColumn.CellTemplate>
+                                                </GridViewColumn>
+                                                <GridViewColumn Header="" Width="160">
+                                                    <GridViewColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <!-- Row tools at the right edge, next to the
+                                                                 ROUTE selector. Self-explanatory at first
+                                                                 glance: while LOCKED a single muted "Edit"
+                                                                 link shows; while UNLOCKED (accent-bordered
+                                                                 MATCH cell) it becomes an accent "Save" plus
+                                                                 a muted "Cancel" — the labels say what they
+                                                                 do. Same quiet ChipIcon look as the proxy
+                                                                 cards; ✕ removes the row in either state. -->
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <Button Content="Edit"
+                                                                        FontSize="11" MinHeight="22" MinWidth="40"
+                                                                        ToolTip="Unlock this rule's MATCH field for typing"
+                                                                        Click="OnEditIpDomainRuleClicked"
+                                                                        Tag="{Binding}">
+                                                                    <Button.Style>
+                                                                        <Style TargetType="Button"
+                                                                               BasedOn="{StaticResource ChipIcon}">
+                                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding IsEditing}" Value="True">
+                                                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </Button.Style>
+                                                                </Button>
+                                                                <Button Content="Save"
+                                                                        FontSize="11" MinHeight="22" MinWidth="40"
+                                                                        FontWeight="SemiBold"
+                                                                        Foreground="{DynamicResource AccentBrush}"
+                                                                        ToolTip="Save the new address/domain and lock the field"
+                                                                        Click="OnSaveIpDomainRuleClicked"
+                                                                        Tag="{Binding}">
+                                                                    <Button.Style>
+                                                                        <Style TargetType="Button"
+                                                                               BasedOn="{StaticResource ChipIcon}">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding IsEditing}" Value="True">
+                                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </Button.Style>
+                                                                </Button>
+                                                                <Button Content="Cancel"
+                                                                        FontSize="11" MinHeight="22" MinWidth="40"
+                                                                        ToolTip="Discard the edit and lock the field"
+                                                                        Click="OnCancelIpDomainRuleClicked"
+                                                                        Tag="{Binding}">
+                                                                    <Button.Style>
+                                                                        <Style TargetType="Button"
+                                                                               BasedOn="{StaticResource ChipIcon}">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                            <Style.Triggers>
+                                                                                <DataTrigger Binding="{Binding IsEditing}" Value="True">
+                                                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                                                </DataTrigger>
+                                                                            </Style.Triggers>
+                                                                        </Style>
+                                                                    </Button.Style>
+                                                                </Button>
+                                                                <Button Style="{StaticResource ChipIcon}"
+                                                                        Content="✕"
+                                                                        Margin="4,0,0,0"
+                                                                        Width="22" Height="22" FontSize="10"
+                                                                        ToolTip="Remove this rule"
+                                                                        Click="OnRemoveIpDomainRuleClicked"
+                                                                        Tag="{Binding}"/>
+                                                            </StackPanel>
+                                                        </DataTemplate>
+                                                    </GridViewColumn.CellTemplate>
+                                                </GridViewColumn>
+                                            </GridView>
+                                        </ListView.View>
+                                    </ListView>
+
+                                    <!-- Empty-state hint: visible while the IP/domain
+                                         list has no rows. -->
+                                    <TextBlock x:Name="EmptyIpDomainHint"
+                                               HorizontalAlignment="Center" VerticalAlignment="Top"
+                                               Margin="0,40,0,0"
+                                               Style="{StaticResource Hint}" TextAlignment="Center"
+                                               Visibility="Collapsed"
+                                               Text="No IP or domain rules yet — use Add IP or Domain… above."/>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <!-- ═══ TAB: SETTINGS ═══ -->
             <TabItem Header="Settings">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel MaxWidth="640" HorizontalAlignment="Left">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+                    <StackPanel MaxWidth="720" HorizontalAlignment="Center" Margin="0,0,0,16">
+
+                        <!-- ── DNS ── -->
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="DNS"/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="Stops your apps' DNS queries from leaking out direct while the proxy runs."/>
+                                <CheckBox x:Name="DnsRelayCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                          Content="Relay DNS through the proxy (all apps — closes the DNS leak)"
+                                          Checked="OnDnsPrefChanged" Unchecked="OnDnsPrefChanged"/>
+                                <StackPanel Orientation="Horizontal" Margin="16,0,0,8">
+                                    <TextBlock Text="Relayed queries go to:"
+                                               Style="{StaticResource FieldLabel}" VerticalAlignment="Center"
+                                               Margin="0,0,8,0"/>
+                                    <ComboBox x:Name="DnsResolverCombo" Width="260" MinHeight="30"
+                                              SelectionChanged="OnDnsPrefChanged"
+                                              ToolTip="Relayed queries are sent to this resolver through the proxy. A public resolver keeps your ISP's DNS out of the path — leak tests then show it instead of your ISP. 'Transparent' forwards each query to the DNS server the app originally addressed.">
+                                        <ComboBoxItem Content="Cloudflare (1.1.1.1) — recommended"/>
+                                        <ComboBoxItem Content="Google (8.8.8.8)"/>
+                                        <ComboBoxItem Content="Quad9 (9.9.9.9)"/>
+                                        <ComboBoxItem Content="Transparent (each app's own DNS server)"/>
+                                    </ComboBox>
+                                </StackPanel>
+                                <CheckBox x:Name="StunRelayCheck" HorizontalAlignment="Left" Margin="16,0,0,8"
+                                          Content="Also relay STUN traffic (WebRTC shows the proxy's IP)"
+                                          Checked="OnDnsPrefChanged" Unchecked="OnDnsPrefChanged"/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap"
+                                           Text="Intercepts ALL outbound DNS (UDP 53, IPv4) system-wide and relays it through the active proxy (SOCKS5 UDP ASSOCIATE) — Windows sends app DNS from its DNS cache service (svchost), so this cannot be limited to selected apps. Applies at the next START. If your proxy does not support UDP, system DNS will fail while this is on — disable it or enable UDP in your proxy."/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                           Text="Still NOT covered: browsers/apps with their own secure DNS (DoH/DoT) and DNS over IPv6 transport."/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- ── Appearance ── -->
                         <Border Style="{StaticResource CardStyle}">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}"
                                            Text="Appearance"/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="How the app looks."/>
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="Theme:"
-                                               Style="{StaticResource FieldLabel}" Margin="0,0,8,0"/>
-                                    <ComboBox x:Name="ThemeCombo" Width="110"
+                                               Style="{StaticResource FieldLabel}" VerticalAlignment="Center"
+                                               Margin="0,0,8,0"/>
+                                    <ComboBox x:Name="ThemeCombo" Width="140" MinHeight="30"
                                               SelectionChanged="OnThemeChanged">
                                         <ComboBoxItem Content="System"/>
                                         <ComboBoxItem Content="Light"/>
                                         <ComboBoxItem Content="Dark"/>
                                     </ComboBox>
                                 </StackPanel>
-                                <TextBlock Style="{StaticResource Hint}"
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap"
                                            Text="&quot;System&quot; follows the Windows personalization setting at the next launch."/>
                             </StackPanel>
                         </Border>
 
+                        <!-- ── Automation ── -->
                         <Border Style="{StaticResource CardStyle}">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}"
                                            Text="Automation"/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="Let the app check proxies for you."/>
                                 <CheckBox x:Name="TestOnSaveCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
                                           Content="Test proxy on save"
                                           Checked="OnTestPrefChanged" Unchecked="OnTestPrefChanged"/>
-                                <TextBlock Style="{StaticResource Hint}"
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap"
                                            Text="Runs a SOCKS5 handshake + CONNECT test after a profile is added or edited. Also available via the profile editor's Test button."/>
                             </StackPanel>
                         </Border>
 
+                        <!-- ── Tunnel optimization ── -->
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="Tunnel optimization"/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="Performance and latency tuning of the packet engine. Applies at the next START."/>
+                                <CheckBox x:Name="AutoMtuCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                          Content="Automatic MTU (probe the path, adapt the advertised MSS)"
+                                          ToolTip="At START the engine measures the largest packet size that survives the path (interface MTU + don't-fragment pings) and lowers the advertised MSS accordingly — prevents fragmentation stalls on small-MTU paths."
+                                          Checked="OnOptimizationPrefChanged" Unchecked="OnOptimizationPrefChanged"/>
+                                <CheckBox x:Name="GameModeCheck" HorizontalAlignment="Left"
+                                          Content="Game Mode (low-latency packets: DSCP EF + MSS 1360)"
+                                          ToolTip="Marks injected packets with DSCP Expedited Forwarding (priority queuing on routers that honor it) and clamps the advertised MSS to 1360 — TunnelX-style low-latency tuning."
+                                          Checked="OnOptimizationPrefChanged" Unchecked="OnOptimizationPrefChanged"/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                           Text="With Game Mode on, the relayed DNS resolver preference is unchanged (Cloudflare is already the fastest default)."/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- ── Tray & startup ── -->
                         <Border Style="{StaticResource CardStyle}">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}"
                                            Text="Tray icon &amp; startup"/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="Run quietly in the background and launch with Windows."/>
                                 <CheckBox x:Name="TrayEnabledCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
                                           Content="Show tray icon (notification area)"
                                           ToolTip="Notification-area icon with Open, Start/Stop routing, live status and Exit. Enables close-to-tray and minimize-to-tray."
                                           Checked="OnTrayPrefChanged" Unchecked="OnTrayPrefChanged"/>
-                                <CheckBox x:Name="StartMinimizedCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                <CheckBox x:Name="StartMinimizedCheck" HorizontalAlignment="Left" Margin="16,0,0,8"
                                           Content="Start minimized to the tray (next launch)"
                                           ToolTip="The next launch shows no window — only the tray icon. Requires the tray icon."
                                           Checked="OnTrayPrefChanged" Unchecked="OnTrayPrefChanged"/>
-                                <CheckBox x:Name="MinimizeToTrayCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
+                                <CheckBox x:Name="MinimizeToTrayCheck" HorizontalAlignment="Left" Margin="16,0,0,8"
                                           Content="Minimize to the tray instead of the taskbar"
                                           ToolTip="The minimize button hides the window; the tray icon restores it. Requires the tray icon."
                                           Checked="OnTrayPrefChanged" Unchecked="OnTrayPrefChanged"/>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <StackPanel Orientation="Horizontal" Margin="16,0,0,8">
                                     <TextBlock Text="Close (X) button:"
                                                Style="{StaticResource FieldLabel}"
                                                VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                    <ComboBox x:Name="CloseBehaviorCombo" Width="240"
+                                    <ComboBox x:Name="CloseBehaviorCombo" Width="260" MinHeight="30"
                                               SelectionChanged="OnCloseBehaviorChanged">
                                         <ComboBoxItem Content="Hide to the tray (keep routing)"/>
                                         <ComboBoxItem Content="Exit the application"/>
@@ -462,7 +753,7 @@
                                           Content="Start Open NetRoute when Windows signs in (current user)"
                                           ToolTip="Registers the current executable under HKCU\Software\Microsoft\Windows\CurrentVersion\Run. The window/tray behavior of that launch follows the settings above."
                                           Checked="OnAutoStartChanged" Unchecked="OnAutoStartChanged"/>
-                                <TextBlock Style="{StaticResource Hint}"
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap"
                                            Text="With the tray icon on, the engine keeps routing while the window is hidden — Exit lives in the tray menu. With it off, Close always exits and minimize uses the taskbar."/>
                             </StackPanel>
                         </Border>
@@ -499,3 +790,5 @@
         </Border>
     </Grid>
 </Window>
+
+

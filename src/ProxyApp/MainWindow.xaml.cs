@@ -45,11 +45,166 @@ public sealed class ProcessRow : INotifyPropertyChanged
 }
 
 /// <summary>
+/// Base class for rule rows whose ROUTE is one merged combo: Disabled (rule
+/// inactive), Direct (pass through outside the proxy), Default Proxy (the
+/// active proxy selected on the Proxies tab), a visual separator, and one
+/// entry per saved proxy profile. Persisted by the rows' owners as
+/// Enabled / Mode / ProxyName; the RuleEngine treats Direct as pass-through
+/// and skips disabled rules.
+/// </summary>
+public abstract class RouteChoiceRow : INotifyPropertyChanged
+{
+    public const int RouteDisabledIndex = 0;
+    public const int RouteDirectIndex = 1;
+    public const int RouteDefaultProxyIndex = 2;
+    public const int RouteSeparatorIndex = 3;
+    public const int RouteFirstProfileIndex = 4;
+
+    /// <summary>The Disabled choice is the FIRST entry of the combo.</summary>
+    public const int DisabledIndex = RouteDisabledIndex;
+
+    /// <summary>Built-in "Disabled" choice label.</summary>
+    public const string RouteDisabled = "Disabled";
+
+    /// <summary>Built-in "Direct" choice label.</summary>
+    public const string RouteDirect = "Direct";
+
+    /// <summary>Built-in "Default Proxy" choice label (the active proxy).</summary>
+    public const string RouteDefaultProxy = "Default Proxy";
+
+    /// <summary>
+    /// Visual spacer between the built-in choices and the saved profiles.
+    /// Rendered as a non-selectable (disabled) combo item.
+    /// </summary>
+    public static readonly string RouteSeparator = new('─', 20);
+
+    /// <summary>
+    /// Shared ROUTE choice list: Disabled, Direct, Default Proxy, separator,
+    /// one entry per saved profile. The list INSTANCE is shared by every row
+    /// and never replaced — MainWindow mutates it in place
+    /// (ObservableCollection, RebuildProxyChoices) so open comboboxes stay
+    /// live.
+    /// </summary>
+    public static readonly System.Collections.ObjectModel.ObservableCollection<string> SharedRouteChoices =
+        [RouteDisabled, RouteDirect, RouteDefaultProxy, RouteSeparator];
+
+    private int _modeIndex = RouteDefaultProxyIndex;
+
+    /// <summary>SelectedIndex of the ROUTE combo (see <see cref="SharedRouteChoices"/>).</summary>
+    public int ModeIndex
+    {
+        get => _modeIndex;
+        set
+        {
+            // WPF blanks the combo (writes -1) on ANY items change of the
+            // shared list. Ignore it here — the visual is restored by the
+            // target-side SelectionChanged guard (OnRouteComboSelectionChanged),
+            // because a source re-raise of an UNCHANGED value is suppressed
+            // by the binding engine (verified empirically).
+            if (value < 0 || value == RouteSeparatorIndex) return;
+            if (_modeIndex == value) return;
+            _modeIndex = value;
+            Enabled = value != DisabledIndex;
+            ProxyName = value >= RouteFirstProfileIndex
+                ? SharedRouteChoices[value]
+                : "";
+            // Raise both so the row's persistence hook (ScheduleSave) fires
+            // and the disabled-row visual (IsDisabled trigger) updates.
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ModeIndex)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDisabled)));
+        }
+    }
+
+    /// <summary>Whether the row's route is Disabled (dimmed + struck through).</summary>
+    public bool IsDisabled => _modeIndex == DisabledIndex;
+
+    /// <summary>The row's routing mode as persisted (Disabled collapses to Direct).</summary>
+    public ProxyMode Mode =>
+        _modeIndex != RouteDirectIndex && _modeIndex != DisabledIndex
+            ? ProxyMode.Proxy
+            : ProxyMode.Direct;
+
+    /// <summary>
+    /// Re-derives the ROUTE combo position from persisted rule state after the
+    /// shared choice list was rebuilt: keeps a pinned profile whose name still
+    /// exists, falls back to Default Proxy when it does not (the engine would
+    /// fall back to the active proxy at runtime anyway), and lands on
+    /// Disabled for inactive rules.
+    /// </summary>
+    public void SetRouteState(bool enabled, ProxyMode mode, string? proxyName)
+    {
+        int idx;
+        if (!enabled)
+            idx = DisabledIndex;
+        else if (mode == ProxyMode.Proxy)
+        {
+            var pin = IndexOfIgnoreCase(proxyName);
+            idx = pin >= RouteFirstProfileIndex ? pin : RouteDefaultProxyIndex;
+        }
+        else
+            idx = RouteDirectIndex;
+
+        _modeIndex = idx;
+        Enabled = enabled;
+        ProxyName = idx >= RouteFirstProfileIndex
+            ? SharedRouteChoices[idx]
+            : "";
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ModeIndex)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDisabled)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Enabled)));
+    }
+
+    /// <summary>Case-insensitive scan of the shared choice list (−1 when absent).</summary>
+    private int IndexOfIgnoreCase(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return -1;
+        for (var i = 0; i < SharedRouteChoices.Count; i++)
+        {
+            if (string.Equals(SharedRouteChoices[i], name, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+        return -1;
+    }
+
+    // ── Pinned profile (derived from the ROUTE combo) ──
+    // Kept in sync by ModeIndex / SetRouteState; "" = Direct, Default Proxy or
+    // Disabled. Read back when the shared choice list is rebuilt so a pin
+    // survives a profile add/rename/delete.
+    private string _proxyName = "";
+
+    /// <summary>The pinned saved-profile name; "" = none pinned.</summary>
+    public string ProxyName
+    {
+        get => _proxyName;
+        set => _proxyName = value ?? "";
+    }
+
+    private bool _enabled = true;
+
+    public bool Enabled
+    {
+        get => _enabled;
+        set
+        {
+            if (_enabled == value) return;
+            _enabled = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Enabled)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>Raise helper for derived rows (C# events can't be raised from a derived class).</summary>
+    protected void RaisePropertyChanged(string propertyName) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+}
+
+/// <summary>
 /// A manually added .exe rule (static, survives Refresh). Rows with an empty
 /// <see cref="ExecutablePath"/> are migrated name-only rules — they match by
 /// name alone and display a dash in the PATH column.
 /// </summary>
-public sealed class ManualRuleRow : INotifyPropertyChanged
+public sealed class ManualRuleRow : RouteChoiceRow
 {
     public string ExecutableName { get; init; } = "";
     public string ExecutablePath { get; init; } = "";
@@ -69,7 +224,7 @@ public sealed class ManualRuleRow : INotifyPropertyChanged
         {
             if (ReferenceEquals(_iconSource, value)) return;
             _iconSource = value;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IconSource)));
+            RaisePropertyChanged(nameof(IconSource));
         }
     }
 
@@ -82,119 +237,92 @@ public sealed class ManualRuleRow : INotifyPropertyChanged
         string.IsNullOrEmpty(ExecutablePath)
             ? "(name-only rule — matches any location)"
             : ExecutablePath + "  (click to copy)";
+}
 
-    // ── Per-rule proxy choice ──
-    // Index 0 = "Default" (the active proxy selected on the Proxies tab);
-    // 1..N = saved profiles. ProxyChoices is shared (same list instance for
-    // every row, rebuilt by MainWindow whenever profiles change); the choice
-    // persists through CollectRulesFromUi / RestoreRulesFromSettings as
-    // ApplicationRule.ProxyName.
-    private string _proxyName = "";
+/// <summary>
+/// One IP/domain (destination) rule row in the IP/Domain tab. The MATCH cell
+/// is user-typed text: an IPv4 address or domain, optionally with a
+/// <c>:port</c> suffix; parsed on collect via
+/// <c>DestinationMatch.TryParse</c> (IPv4 only by design).
+///
+/// The MATCH cell is locked (read-only) until the row's ✎ edit button is
+/// clicked; ✓ commits and re-locks — accidental typing cannot corrupt a
+/// saved match.
+/// </summary>
+public sealed class IpDomainRuleRow : RouteChoiceRow
+{
+    private string _matchText = "";
 
-    /// <summary>The pinned saved-profile name; "" = Default (active proxy).</summary>
-    public string ProxyName
+    /// <summary>The match cell text: "1.2.3.4", "1.2.3.4:443", "example.com", …</summary>
+    public string MatchText
     {
-        get => _proxyName;
-        set => _proxyName = value ?? "";
-    }
-
-    private int _proxyIndex;
-
-    /// <summary>SelectedIndex of the PROXY combobox (0 = Default).</summary>
-    public int ProxyIndex
-    {
-        get => _proxyIndex;
+        get => _matchText;
         set
         {
-            // Guard transient -1 while WPF reconciles a shrinking ItemsSource.
-            var v = value < 0 ? 0 : value;
-            if (_proxyIndex == v) return;
-            _proxyIndex = v;
-            ProxyName = v > 0 && v < ProxyChoices.Count ? ProxyChoices[v] : "";
-            // Raise so the row's persistence hook (ScheduleSave) fires — the
-            // user's combobox choice must reach the settings file.
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProxyIndex)));
+            var v = value ?? "";
+            if (_matchText == v) return;
+            _matchText = v;
+            RaisePropertyChanged(nameof(MatchText));
         }
     }
 
-    /// <summary>
-    /// Combobox choices: "Default" plus one entry per saved profile. The list
-    /// INSTANCE is shared by every row and never replaced — MainWindow mutates
-    /// it in place (ObservableCollection) so open comboboxes stay live.
-    /// </summary>
-    public System.Collections.ObjectModel.ObservableCollection<string> ProxyChoices { get; }
-        = ProxyChoiceDefaults;
+    private bool _isEditing;
 
-    /// <summary>Shared 1-element choice list used before any profile exists.</summary>
-    public static readonly System.Collections.ObjectModel.ObservableCollection<string> ProxyChoiceDefaults = ["Default"];
-
-    /// <summary>
-    /// Re-derives the proxy choice from a profile name after the choice list
-    /// was rebuilt: keeps the pin when the name still exists, otherwise snaps
-    /// back to Default.
-    /// </summary>
-    public void SetProxyByName(string? proxyName)
+    /// <summary>Whether the MATCH cell is unlocked for typing (Edit/Save toggle).</summary>
+    public bool IsEditing
     {
-        _proxyIndex = string.IsNullOrEmpty(proxyName)
-            ? 0
-            : Math.Max(0, IndexOfIgnoreCase(proxyName));
-        ProxyName = _proxyIndex > 0 ? ProxyChoices[_proxyIndex] : "";
-    }
-
-    /// <summary>Case-insensitive scan of the shared choice list (−1 when absent).</summary>
-    private int IndexOfIgnoreCase(string name)
-    {
-        for (var i = 0; i < ProxyChoices.Count; i++)
-        {
-            if (string.Equals(ProxyChoices[i], name, StringComparison.OrdinalIgnoreCase))
-                return i;
-        }
-        return -1;
-    }
-
-    /// <summary>Re-raises the selection binding after a choice-list rebuild.</summary>
-    public void RefreshProxyBindings() =>
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProxyIndex)));
-
-    private bool _enabled = true;
-
-    public bool Enabled
-    {
-        get => _enabled;
+        get => _isEditing;
         set
         {
-            if (_enabled == value) return;
-            _enabled = value;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Enabled)));
+            if (_isEditing == value) return;
+            _isEditing = value;
+            RaisePropertyChanged(nameof(IsEditing));
         }
     }
 
-    public event PropertyChangedEventHandler? PropertyChanged;
+    private bool _isInvalid;
 
-    // ── Route choice (Proxy / Direct) ──
-    // Index 0 = Proxy (route through the pinned or active proxy), 1 = Direct
-    // (pass through outside the proxy). Persisted as ApplicationRule.Mode by
-    // CollectRulesFromUi; the RuleEngine already treats Direct as pass-through.
-    private int _modeIndex;
-
-    /// <summary>SelectedIndex of the ROUTE combo (0 = Proxy, 1 = Direct).</summary>
-    public int ModeIndex
+    /// <summary>True when the user tried to Save text that does not parse — the MATCH cell shows a red border.</summary>
+    public bool IsInvalid
     {
-        get => _modeIndex;
+        get => _isInvalid;
         set
         {
-            if (_modeIndex == value) return;
-            _modeIndex = value;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ModeIndex)));
+            if (_isInvalid == value) return;
+            _isInvalid = value;
+            RaisePropertyChanged(nameof(IsInvalid));
         }
     }
 
+    private string? _editBackup;
+
     /// <summary>
-    /// ROUTE combo choices (Proxy, Direct). A fixed list — the combo is a mode
-    /// switch, not a dynamic profile list (see <see cref="ProxyChoices"/> for
-    /// the per-rule proxy pin).
+    /// Unlocks the MATCH cell, remembering the current text so
+    /// <see cref="CancelEdit"/> can restore it.
     /// </summary>
-    public static readonly string[] RouteChoices = ["Proxy", "Direct"];
+    public void BeginEdit()
+    {
+        _editBackup = _matchText;
+        IsEditing = true;
+    }
+
+    /// <summary>Commits: re-locks the cell (the text was already live-bound).</summary>
+    public void CommitEdit()
+    {
+        _editBackup = null;
+        IsInvalid = false;
+        IsEditing = false;
+    }
+
+    /// <summary>Cancels: restores the pre-edit text and re-locks the cell.</summary>
+    public void CancelEdit()
+    {
+        if (_editBackup is not null)
+            MatchText = _editBackup;
+        _editBackup = null;
+        IsInvalid = false;
+        IsEditing = false;
+    }
 }
 
 /// <summary>A folder bundle rule (static, survives Refresh).</summary>
@@ -234,8 +362,8 @@ public sealed class BundleRow : INotifyPropertyChanged
     }
 
     // ── Per-bundle proxy choice (applies when ModeIndex == 0, i.e. Proxy) ──
-    // Same model as ManualRuleRow: index 0 = Default (the active proxy),
-    // 1..N = saved profiles; shared list maintained by MainWindow.
+    // Index 0 = Default (the active proxy), 1..N = saved profiles; shared list
+    // maintained by MainWindow.
     private string _proxyName = "";
 
     /// <summary>The pinned saved-profile name; "" = Default (active proxy).</summary>
@@ -265,11 +393,15 @@ public sealed class BundleRow : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Combobox choices: "Default" plus one entry per saved profile. Same
-    /// shared, never-replaced instance as <see cref="ManualRuleRow.ProxyChoices"/>.
+    /// Combobox choices: "Default" plus one entry per saved profile. The list
+    /// INSTANCE is shared by every bundle and never replaced — MainWindow
+    /// mutates it in place (ObservableCollection) so open comboboxes stay live.
     /// </summary>
     public System.Collections.ObjectModel.ObservableCollection<string> ProxyChoices { get; }
-        = ManualRuleRow.ProxyChoiceDefaults;
+        = ProxyChoiceDefaults;
+
+    /// <summary>Shared 1-element choice list used before any profile exists.</summary>
+    public static readonly System.Collections.ObjectModel.ObservableCollection<string> ProxyChoiceDefaults = ["Default"];
 
     /// <summary>
     /// Re-derives the bundle's proxy choice from a profile name after the
@@ -432,6 +564,7 @@ public partial class MainWindow : Window
 
     private readonly ObservableCollection<ProcessRow> _processes = new();
     private readonly ObservableCollection<ManualRuleRow> _manualRules = new();
+    private readonly ObservableCollection<IpDomainRuleRow> _ipDomainRules = new();
     private readonly ObservableCollection<BundleRow> _bundles = new();
     private readonly ObservableCollection<ProfileItem> _profiles = new();
     private readonly LogPanel _logPanel;
@@ -488,6 +621,7 @@ public partial class MainWindow : Window
         RestoreWindowPlacement();
 
         ManualRuleList.ItemsSource = _manualRules;
+        IpDomainRuleList.ItemsSource = _ipDomainRules;
         BundleList.ItemsSource = _bundles;
 
         // Debounced save timer: coalesces bursts of changes (typing, bulk
@@ -506,6 +640,17 @@ public partial class MainWindow : Window
         _engine.SetTrace(_logPanel.Append);
         _engine.SetFlowClosed(_logPanel.Append);
         _logPanel.Log("INFO", "Engine trace + flow-summary sinks wired.");
+
+        // DNS-relay status (eager UDP-ASSOCIATE probe at START + retries):
+        // surface failures loudly — a proxy without UDP support otherwise
+        // fails silently and the user only notices on leak tests.
+        _engine.DnsRelayStatusChanged += (ok, message) => Dispatcher.BeginInvoke(() =>
+        {
+            _logPanel.Log(ok ? "INFO" : "WARN", $"[DNS] {message}");
+            SetStatus(ok ? "DNS relay active." : "DNS relay FAILED — see the log.", ok ? StatusSeverity.Info : StatusSeverity.Warning);
+            if (!ok)
+                CopyToast.Show(this, "DNS relay failed — proxy may not support UDP", bottomMargin: 64, warning: true);
+        });
 
         RefreshProcesses();
 
@@ -703,6 +848,10 @@ public partial class MainWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
 
+        EmptyIpDomainHint.Visibility = _ipDomainRules.Count == 0
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
         BundleHeaderPanel.Visibility = _bundles.Count == 0
             ? Visibility.Collapsed
             : Visibility.Visible;
@@ -711,6 +860,100 @@ public partial class MainWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
     }
+
+    // ―― IP/domain (destination) rules ――
+
+    private void OnAddIpDomainRuleClicked(object sender, RoutedEventArgs e)
+    {
+        var row = new IpDomainRuleRow();
+        // Live typing is NOT persisted — only the committed (validated) state
+        // reaches the settings file: MatchText changes while the row is in
+        // edit mode are skipped; CommitEdit/CancelEdit re-raise and persist.
+        row.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(IpDomainRuleRow.MatchText) && row.IsEditing)
+                return;
+            ScheduleSave();
+        };
+        _ipDomainRules.Add(row);
+        row.BeginEdit(); // unlocked for immediate typing — the Save/Cancel buttons say so
+        ScheduleSave();
+        UpdateEmptyStateHints();
+        SetStatus("Type an IPv4 address or domain (optionally ':port'), then click Save.");
+    }
+
+    private void OnRemoveIpDomainRuleClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: IpDomainRuleRow row })
+        {
+            _ipDomainRules.Remove(row);
+            ScheduleSave();
+            UpdateEmptyStateHints();
+        }
+    }
+
+    private void OnEditIpDomainRuleClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: IpDomainRuleRow row })
+            row.BeginEdit(); // unlock the MATCH cell for typing
+    }
+
+    private void OnSaveIpDomainRuleClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: IpDomainRuleRow row })
+            return;
+
+        // Gate: an invalid match is REJECTED — the row stays unlocked (red
+        // border) until the text parses. Nothing invalid is ever committed
+        // or persisted.
+        if (!global::ProxyApp.Core.Rules.DestinationMatch.TryParse(row.MatchText, out _, out _))
+        {
+            row.IsInvalid = true;
+            SetStatus(
+                $"'{row.MatchText}' is not a valid IPv4 address or domain (optional ':port') — fix it, then Save.",
+                StatusSeverity.Error);
+            _logPanel.Log("WARN", $"Rejected invalid destination rule text: {row.MatchText}");
+            CopyToast.Show(this, "Invalid MATCH — not saved", bottomMargin: 64, warning: true);
+            return;
+        }
+
+        row.CommitEdit(); // commit and re-lock
+        PersistNow();
+        SetStatus($"Destination rule '{row.MatchText}' saved.");
+        _logPanel.Log("INFO", $"IP/domain rule saved: {row.MatchText}");
+    }
+
+    private void OnCancelIpDomainRuleClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: IpDomainRuleRow row })
+        {
+            row.CancelEdit(); // restore the pre-edit text and re-lock
+            PersistNow();
+        }
+    }
+
+    /// <summary>
+    /// Target-side guard for every ROUTE combo: WPF blanks the combo's
+    /// selection (-1) on ANY change of the shared items list (even a pure
+    /// Add), and the binding engine will NOT push a source re-raise of an
+    /// unchanged value back into it. So when the combo reports -1, snap it
+    /// directly back to the row's actual state (direct target write — always
+    /// works). Fires for profile add/edit/delete/paste and initial restore.
+    /// </summary>
+    private void OnRouteComboSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is ComboBox { DataContext: RouteChoiceRow row, SelectedIndex: < 0 } combo)
+            combo.SelectedIndex = row.ModeIndex;
+    }
+
+    /// <summary>
+    /// Stretches the MATCH column to the remaining list width so the text
+    /// field fills the row (~3x the ROUTE selector at the default window
+    /// size) and no dead space remains after the tools. The sum covers the
+    /// OTHER columns only (ROUTE 130 + tools 160).
+    /// </summary>
+    private void OnIpDomainListSizeChanged(object sender, SizeChangedEventArgs e) =>
+        GridViewHelper.StretchPathColumn(IpDomainRuleList, IpDomainMatchColumn, 130 + 160);
 
     // ── Manual-rule row icons ──
 
@@ -729,10 +972,13 @@ public partial class MainWindow : Window
     /// <summary>
     /// Keeps the PATH column stretched to the remaining list width so long
     /// paths trim with an ellipsis instead of forcing a horizontal scrollbar
-    /// (which would push the ✕ remove button out of view).
+    /// (which would push the ✕ remove button out of view). The sum covers the
+    /// OTHER columns only (EXECUTABLE 130 + ROUTE 130 + remove 44) — passing
+    /// PATH's own width here would overflow the row at the default window
+    /// size and clip ROUTE/✕.
     /// </summary>
     private void OnManualRuleListSizeChanged(object sender, SizeChangedEventArgs e) =>
-        GridViewHelper.StretchPathColumn(ManualRuleList, ManualRulePathColumn, 70 + 150 + 330 + 130 + 44);
+        GridViewHelper.StretchPathColumn(ManualRuleList, ManualRulePathColumn, 130 + 130 + 44);
 
     /// <summary>
     /// Clicking a PATH cell copies the full path to the clipboard and pops the
@@ -923,6 +1169,7 @@ public partial class MainWindow : Window
     private void PersistStateIntoSettings()
     {
         _settings.Rules = CollectRulesFromUi();
+        _settings.IpDomainRules = CollectIpDomainRulesFromUi();
         _settings.Proxies = _profiles.Select(p => p.Config).ToList();
         _settings.SelectedProxyName = SelectedProfile?.Name;
 
@@ -961,6 +1208,17 @@ public partial class MainWindow : Window
             _ => 0
         };
         TestOnSaveCheck.IsChecked = _settings.Preferences.TestProxyOnSave;
+        DnsRelayCheck.IsChecked = _settings.Dns.Enabled;
+        StunRelayCheck.IsChecked = _settings.Dns.RelayStun;
+        DnsResolverCombo.SelectedIndex = _settings.Dns.ResolverOverride switch
+        {
+            "8.8.8.8" => 1,
+            "9.9.9.9" => 2,
+            "" => 3,
+            _ => 0
+        };
+        AutoMtuCheck.IsChecked = _settings.Optimization.AutoMtu;
+        GameModeCheck.IsChecked = _settings.Optimization.GameMode;
 
         // Tray group — checkboxes echo the persisted prefs; the auto-start
         // checkbox reflects the REGISTRY (its single source of truth).
@@ -1041,7 +1299,25 @@ public partial class MainWindow : Window
     private void RestoreRulesFromSettings()
     {
         _manualRules.Clear();
+        _ipDomainRules.Clear();
         _bundles.Clear();
+
+        foreach (var rule in _settings.IpDomainRules)
+        {
+            if (rule is null)
+                continue;
+
+            // Rebuild the editable "host[:port]" cell text from the model.
+            var row = new IpDomainRuleRow
+            {
+                MatchText = rule.Port is { } port
+                    ? $"{rule.Host}:{port}"
+                    : rule.Host ?? ""
+            };
+            row.SetRouteState(rule.Enabled, rule.Mode, rule.ProxyName);
+            row.PropertyChanged += (_, _) => ScheduleSave();
+            _ipDomainRules.Add(row);
+        }
 
         foreach (var rule in _settings.Rules)
         {
@@ -1067,10 +1343,9 @@ public partial class MainWindow : Window
                 var manual = new ManualRuleRow
                 {
                     ExecutableName = rule.ExecutableName ?? "",
-                    ExecutablePath = rule.ExecutablePath,
-                    Enabled = rule.Enabled
+                    ExecutablePath = rule.ExecutablePath
                 };
-                manual.SetProxyByName(rule.ProxyName);
+                manual.SetRouteState(rule.Enabled, rule.Mode, rule.ProxyName);
                 manual.PropertyChanged += (_, _) => ScheduleSave();
                 _manualRules.Add(manual);
                 ResolveRuleIcon(manual);
@@ -1085,10 +1360,9 @@ public partial class MainWindow : Window
                 var manual = new ManualRuleRow
                 {
                     ExecutableName = rule.ExecutableName,
-                    ExecutablePath = "",
-                    Enabled = rule.Enabled
+                    ExecutablePath = ""
                 };
-                manual.SetProxyByName(rule.ProxyName);
+                manual.SetRouteState(rule.Enabled, rule.Mode, rule.ProxyName);
                 manual.PropertyChanged += (_, _) => ScheduleSave();
                 _manualRules.Add(manual);
                 ResolveRuleIcon(manual);
@@ -1460,6 +1734,47 @@ public partial class MainWindow : Window
         ScheduleSave();
     }
 
+    // ―― Tunnel-optimization settings (automatic MTU / Game Mode) ――
+
+    private void OnOptimizationPrefChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_uiReady || _suppressPreferenceEvents)
+            return;
+
+        _settings.Optimization.AutoMtu = AutoMtuCheck.IsChecked == true;
+        _settings.Optimization.GameMode = GameModeCheck.IsChecked == true;
+        ScheduleSave();
+        _logPanel.Log("INFO",
+            $"[MTU] Auto-tune={_settings.Optimization.AutoMtu}; Game Mode={_settings.Optimization.GameMode} — applies at the next START.");
+        SetStatus("Tunnel optimization updated — takes effect at the next START.");
+    }
+
+    // ―― DNS settings (Phase 8) ――
+
+    private void OnDnsPrefChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_uiReady || _suppressPreferenceEvents)
+            return;
+
+        _settings.Dns.Enabled = DnsRelayCheck.IsChecked == true;
+        _settings.Dns.ResolverOverride = DnsResolverCombo.SelectedIndex switch
+        {
+            1 => "8.8.8.8",
+            2 => "9.9.9.9",
+            3 => "",
+            _ => "1.1.1.1"
+        };
+        _settings.Dns.RelayStun = StunRelayCheck.IsChecked == true;
+        ScheduleSave();
+        _logPanel.Log("INFO",
+            $"[DNS] Relay-through-proxy {(_settings.Dns.Enabled ? "enabled" : "disabled")} " +
+            $"(resolver='{(string.IsNullOrEmpty(_settings.Dns.ResolverOverride) ? "transparent" : _settings.Dns.ResolverOverride)}', " +
+            $"STUN relay={_settings.Dns.RelayStun}) — applies at the next START.");
+        SetStatus(_settings.Dns.Enabled
+            ? "DNS relay enabled — takes effect at the next START."
+            : "DNS relay disabled — takes effect at the next START.");
+    }
+
     // ―― Tray & startup settings (Phase 11) ――
 
     private void OnTrayPrefChanged(object sender, RoutedEventArgs e)
@@ -1812,6 +2127,7 @@ public partial class MainWindow : Window
         {
             Proxy = proxy,
             Rules = CollectRulesFromUi(),
+            IpDomainRules = CollectIpDomainRulesFromUi(),
             Proxies = _profiles.Select(p => p.Config).ToList(),
             SelectedProxyName = SelectedProfile?.Name,
             LogLevel = _settings.LogLevel,
@@ -1820,36 +2136,71 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Rebuilds the shared per-rule proxy choice list ("Default" + one entry
-    /// per saved profile) and re-applies it to every manual rule and bundle
-    /// row. Rows keep their pinned profile by NAME when it still exists and
-    /// snap back to Default when it does not (e.g. the profile was deleted).
-    /// Called whenever the profile list changes: add, edit (rename), delete,
+    /// Reconciles a shared choice list IN PLACE against the desired contents:
+    /// only the differing entries are Replaced / Removed / Added — the list is
+    /// never Cleared. A Reset event makes WPF write -1 into every bound
+    /// ComboBox and the selection is LOST (blank), even if the source
+    /// re-raises afterwards (verified empirically); in-place mutation keeps
+    /// every open combo on its selection.
+    /// </summary>
+    private static void ReconcileInPlace(ObservableCollection<string> target, IReadOnlyList<string> desired)
+    {
+        while (target.Count > desired.Count)
+            target.RemoveAt(target.Count - 1);
+        for (var i = 0; i < target.Count; i++)
+        {
+            if (!string.Equals(target[i], desired[i], StringComparison.Ordinal))
+                target[i] = desired[i];
+        }
+        for (var i = target.Count; i < desired.Count; i++)
+            target.Add(desired[i]);
+    }
+
+    /// <summary>
+    /// Rebuilds the two shared rule choice lists: the ROUTE list shared by
+    /// manual exe rules and IP/domain rules (Disabled, Direct, Default Proxy,
+    /// separator, one entry per saved profile) and the bundles' "via" list
+    /// ("Default" + one entry per saved profile). Rows keep their pinned
+    /// profile by NAME when it still exists and fall back to Default Proxy /
+    /// Default when it does not (e.g. the profile was deleted). Called
+    /// whenever the profile list changes: add, edit (rename), delete,
     /// delete-all, paste, and initial restore.
     /// </summary>
     private void RebuildProxyChoices()
     {
-        // Capture every row's pin BEFORE touching the shared list: clearing it
-        // makes WPF write -1 selections back (guarded), which would clobber
-        // ProxyName before SetProxyByName could restore it.
-        var manualPins = _manualRules.Select(r => (row: r, pin: r.ProxyName)).ToList();
+        // Capture every row's state BEFORE touching the shared lists: the
+        // lists are then reconciled in place (NO Reset — see
+        // ReconcileInPlace) and every row re-derives its position by name.
+        var manualStates = _manualRules
+            .Select(r => (row: (RouteChoiceRow)r, r.Enabled, r.Mode, pin: r.ProxyName))
+            .Concat(_ipDomainRules.Select(r => (row: (RouteChoiceRow)r, r.Enabled, r.Mode, pin: r.ProxyName)))
+            .ToList();
         var bundlePins = _bundles.Select(b => (row: b, pin: b.ProxyName)).ToList();
 
-        var shared = ManualRuleRow.ProxyChoiceDefaults;
-        shared.Clear();
-        shared.Add("Default");
-        foreach (var name in _profiles
-                     .Select(p => p.Config.Name)
-                     .Where(n => !string.IsNullOrWhiteSpace(n)))
-        {
-            shared.Add(name!);
-        }
+        var profileNames = _profiles
+            .Select(p => p.Config.Name)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .ToList();
 
-        foreach (var (row, pin) in manualPins)
+        // Manual-rule + IP/domain ROUTE choices: Disabled, Direct, Default
+        // Proxy, separator, one entry per saved profile.
+        var desiredRoutes = new List<string>
         {
-            row.SetProxyByName(pin);
-            row.RefreshProxyBindings();
-        }
+            RouteChoiceRow.RouteDisabled,
+            RouteChoiceRow.RouteDirect,
+            RouteChoiceRow.RouteDefaultProxy,
+            RouteChoiceRow.RouteSeparator
+        };
+        desiredRoutes.AddRange(profileNames);
+        ReconcileInPlace(RouteChoiceRow.SharedRouteChoices, desiredRoutes);
+
+        // Bundle "via" choices: "Default" + one entry per saved profile.
+        var desiredBundleChoices = new List<string> { "Default" };
+        desiredBundleChoices.AddRange(profileNames);
+        ReconcileInPlace(BundleRow.ProxyChoiceDefaults, desiredBundleChoices);
+
+        foreach (var (row, enabled, mode, pin) in manualStates)
+            row.SetRouteState(enabled, mode, pin);
 
         foreach (var (row, pin) in bundlePins)
         {
@@ -1870,18 +2221,25 @@ public partial class MainWindow : Window
         var rules = new List<ApplicationRule>();
 
         // Manual exe rules — name + path rules (path empty for migrated
-        // name-only rules; the engine then matches by name alone). Each rule
-        // may pin one saved proxy profile ("Default" → null = active proxy).
+        // name-only rules; the engine then matches by name alone). The ROUTE
+        // combo merges mode and proxy pin: Disabled rows collapse to an
+        // inactive Direct rule (the engine skips them entirely); a profile
+        // entry pins that profile; "Default Proxy" → null = active proxy.
         rules.AddRange(_manualRules
-            .Select(m => new ApplicationRule
+            .Select(m =>
             {
-                ExecutableName = m.ExecutableName,
-                ExecutablePath = string.IsNullOrEmpty(m.ExecutablePath) ? null : m.ExecutablePath,
-                Enabled = m.Enabled,
-                Mode = m.ModeIndex == 1 ? ProxyMode.Direct : ProxyMode.Proxy,
-                ProxyName = m.ModeIndex == 1 || string.IsNullOrEmpty(m.ProxyName)
-                    ? null
-                    : m.ProxyName
+                var enabled = m.ModeIndex != RouteChoiceRow.DisabledIndex;
+                var pinned = m.ModeIndex >= RouteChoiceRow.RouteFirstProfileIndex;
+                return new ApplicationRule
+                {
+                    ExecutableName = m.ExecutableName,
+                    ExecutablePath = string.IsNullOrEmpty(m.ExecutablePath) ? null : m.ExecutablePath,
+                    Enabled = enabled,
+                    Mode = enabled && m.ModeIndex != RouteChoiceRow.RouteDirectIndex
+                        ? ProxyMode.Proxy
+                        : ProxyMode.Direct,
+                    ProxyName = pinned ? RouteChoiceRow.SharedRouteChoices[m.ModeIndex] : null
+                };
             }));
 
         // Folder bundles → folder rules. A Direct bundle ignores its proxy pin.
@@ -1895,6 +2253,46 @@ public partial class MainWindow : Window
                     ? b.ProxyName
                     : null
             }));
+
+        return rules;
+    }
+
+    /// <summary>
+    /// Collects the ordered IP/domain (destination) rules from the UI. The
+    /// MATCH cell is parsed with <see cref="global::ProxyApp.Core.Rules.DestinationMatch.TryParse"/>;
+    /// a row that does not parse is collected with its raw text as
+    /// <see cref="IpDomainRule.Host"/> so the Start-time validation surfaces
+    /// it to the user (never a silent drop). The parsed port travels in
+    /// <see cref="IpDomainRule.Port"/>; the ROUTE combo state maps to
+    /// Enabled/Mode/ProxyName exactly like the manual exe rules.
+    /// </summary>
+    private List<IpDomainRule> CollectIpDomainRulesFromUi()
+    {
+        var rules = new List<IpDomainRule>();
+        foreach (var row in _ipDomainRules)
+        {
+            // A blank row is a never-saved new row — skip it entirely instead
+            // of failing START with "host must not be empty".
+            if (string.IsNullOrWhiteSpace(row.MatchText))
+                continue;
+
+            var enabled = row.ModeIndex != RouteChoiceRow.DisabledIndex;
+            var pinned = row.ModeIndex >= RouteChoiceRow.RouteFirstProfileIndex;
+
+            global::ProxyApp.Core.Rules.DestinationMatch.TryParse(
+                row.MatchText, out var host, out var parsedPort);
+
+            rules.Add(new IpDomainRule
+            {
+                Host = host.Length > 0 ? host : row.MatchText.Trim(),
+                Port = parsedPort,
+                Enabled = enabled,
+                Mode = enabled && row.ModeIndex != RouteChoiceRow.RouteDirectIndex
+                    ? ProxyMode.Proxy
+                    : ProxyMode.Direct,
+                ProxyName = pinned ? RouteChoiceRow.SharedRouteChoices[row.ModeIndex] : null
+            });
+        }
 
         return rules;
     }
