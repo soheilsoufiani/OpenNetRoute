@@ -1,4 +1,4 @@
-![[Open NetRoute Logo](www.photopea.com/g/LmBrjEzS)
+![Open NetRoute Logo](https://raw.githubusercontent.com/soheilsoufiani/OpenNetRoute/refs/heads/main/icons/Open%20NetRoute%20white.png?token=GHSAT0AAAAAAEJ34PLOMZFINVFERAC7L2XM2VUJPHQ)
 # Open NetRoute
 
 An open-source Windows desktop application that routes the traffic of selected
