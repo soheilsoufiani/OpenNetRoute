@@ -1,4 +1,5 @@
-﻿# Open NetRoute
+![[Open NetRoute Logo](www.photopea.com/g/LmBrjEzS)
+# Open NetRoute
 
 An open-source Windows desktop application that routes the traffic of selected
 applications through a user-configured **SOCKS5 proxy**, while leaving all other
