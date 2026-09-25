@@ -1,6 +1,4 @@
-![Open NetRoute Logo](https://github.com/soheilsoufiani/OpenNetRoute/blob/main/icons/Open%20NetRoute%20White%20small.png?raw=true)
-# Open NetRoute
-
+# Open NetRoute [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![.NET](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
 An open-source Windows desktop application that routes the traffic of selected
 applications through a user-configured **SOCKS5 proxy**, while leaving all other
 applications on the normal network path. A lightweight, transparent alternative
