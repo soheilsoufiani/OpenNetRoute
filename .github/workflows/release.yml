@@ -1,0 +1,86 @@
+name: Build and Release Beta
+
+on:
+  push:
+    tags:
+      - "v*-beta*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.400"
+
+      - name: Restore
+        run: dotnet restore ProxyApp.slnx
+
+      - name: Publish Windows x64
+        run: >
+          dotnet publish src/ProxyApp/ProxyApp.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -o ./artifacts/OpenNetRoute-${{ github.ref_name }}-win-x64
+
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          $folder = "./artifacts/OpenNetRoute-${{ github.ref_name }}-win-x64"
+          $zip = "./artifacts/OpenNetRoute-${{ github.ref_name }}-win-x64.zip"
+
+          Compress-Archive -Path "$folder/*" -DestinationPath $zip
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+
+          @"
+          ## Open NetRoute $version
+
+          This is a Beta release of Open NetRoute for Windows x64.
+
+          Open NetRoute lets you route selected Windows applications through a SOCKS5 proxy while leaving other applications on their normal network connection.
+
+          ### Download
+
+          Download OpenNetRoute-$tag-win-x64.zip, extract it, and run OpenNetRoute.exe with **Run as administrator**.
+
+          This build is currently for **Windows x64 only**.
+
+          ### Beta Notes
+
+          - SOCKS5 proxy profiles
+          - Per-application routing
+          - IP and domain rules
+          - TCP traffic routing
+          - DNS relay through SOCKS5
+          - Data usage tracking
+          - System tray support
+          - Tunnel optimization settings
+          - Debug and logging support
+
+          DNS relay is implemented, but complete DNS leak protection is not guaranteed. Some applications and protocols, including DoH and DoT, may use other DNS paths.
+
+          This is a Beta release, so some applications, protocols, or Windows configurations may behave differently.
+
+          See the README and documentation in the repository for more information.
+          "@ | Set-Content -Path "./artifacts/release-notes.md" -Encoding utf8
+
+          gh release create "$tag" "./artifacts/OpenNetRoute-$tag-win-x64.zip" `
+            --title "Open NetRoute $version" `
+            --notes-file "./artifacts/release-notes.md" `
+            --prerelease
