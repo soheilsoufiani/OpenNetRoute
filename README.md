@@ -1,284 +1,367 @@
-# Open NetRoute [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![.NET](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
-An open-source Windows desktop application that routes the traffic of selected
-applications through a user-configured **SOCKS5 proxy**, while leaving all other
-applications on the normal network path. A lightweight, transparent alternative
-to tools such as Proxifier.
+[![Open NetRoute Video Preview](https://raw.githubusercontent.com/soheilsoufiani/OpenNetRoute/refs/heads/main/icons/banner.webp?token=GHSAT0AAAAAAEJ34PLPQ5XYJQCERWTCTO2E2V4G5PQ)](VIDEO_URL)
+# Open NetRoute [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![.NET](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/) [![WPF](https://img.shields.io/badge/framework-WPF-blue.svg)](https://www.cmarix.com/our-services.html)
 
-**Status: pre-beta (v0.0.1).** The networking core (WinDivert interception →
-SOCKS5 ferry), the WPF GUI, and the tray integration are implemented and
-covered by 308 automated tests. DNS interception and release packaging are
-still pending — see [Limitations](#limitations-please-read) for the honest
-picture.
+**Selective application routing for Windows through SOCKS5 proxies.**
+
+Open NetRoute is a Windows desktop application that lets you route selected applications through a SOCKS5 proxy while leaving other applications on their normal network connection.
+
+Instead of changing the Windows routing table or creating a VPN interface, Open NetRoute uses **WinDivert** and a user-space forwarding layer to intercept and route selected application traffic.
+
+Here's [Installation](README.md#installation) and [Quick Start](README.md#installation) Guide
+> **Beta:** Open NetRoute is currently in active Beta development. The core application-routing and SOCKS5 forwarding functionality is implemented, but some network protocols and edge cases remain outside the current scope.
+
+## Video Preview
+
+A short video showing Open NetRoute in action will be available here.
+
+[![Open NetRoute Video Preview](docs/images/video-preview.png)](VIDEO_URL)
 
 ## Features
 
-- **Per-application SOCKS5 routing** — TCP connections of selected apps are
-  routed through the proxy; all other traffic is untouched.
-- **IP/domain destination rules** — route or stay direct by destination IPv4
-  (optional port) or domain (DNS-resolved); evaluated before the app rules.
-- **DNS relay (closes the DNS leak)** — outbound DNS (UDP 53) is relayed
-  through the proxy's UDP ASSOCIATE leg to a public resolver of your choice
-  (Cloudflare/Google/Quad9/transparent); optional STUN relay so WebRTC reports
-  the proxy's IP. Needs a UDP-capable proxy.
-- **Data Usage tab** — live up/down speed (bytes/s, once a second) and a
-  cumulative per-configuration history (uploaded / downloaded / total),
-  persisted across restarts.
-- **Tunnel optimization** — automatic MTU (interface MTU + don't-fragment
-  probes adapt the advertised MSS) and Game Mode (DSCP EF marking + MSS 1360).
-- **Application rules with icons** — each rule row shows the executable's own
-  icon behind its name (a neutral placeholder for name-only rules).
-- **Proxy profiles** — multiple SOCKS5 servers, paste
-  `socks5://user:pass@host:port` URIs, one-click connection test (ping), sort
-  by latency.
-- **Application rules** — match by executable name or full path; add from the
-  running-process list, from disk (`.exe` picker), or as **folder bundles**.
-- **In-app debug window** — bounded, real-time connection event log with
-  per-connection summaries and health statistics.
-- **Tray icon** — start/stop routing from the notification area, live status
-  with a green "routing" badge, close/minimize to tray, and optional
-  start-with-Windows (per-user auto-start).
-- **Theme** — system / light / dark.
-- **Robust settings persistence** — atomic JSON writes, corruption
-  quarantine, DPAPI-encrypted proxy passwords (details below).
+### 🎯 Per-Application Proxy Routing
 
-## How it works (high level)
+Choose which applications should use your SOCKS5 proxy.
 
-1. On START the app opens a WinDivert **network-layer** handle with the capture
-   filter `outbound and ip and tcp and not loopback` (IPv4 TCP only).
-2. Each captured SYN is attributed to its owning process via the Windows TCP
-   connection table (cached, refreshed at most once per ~50 ms window); the
-   rule set then decides **proxy** or **direct**.
-3. *Proxy* connections: a user-space "ferry" answers the client's SYN with a
-   crafted SYN-ACK **immediately** (the application's handshake completes with
-   ~zero added latency) while the real **SOCKS5 CONNECT** to the configured
-   proxy runs **in parallel**; once connected, bytes are relayed with a
-   byte-level exactly-once guarantee between app and proxy.
-4. *Direct* traffic is re-injected unchanged. Loopback is never captured, so
-   pointing a profile at a **local SOCKS5 proxy** (v2ray/Xray/sing-box inbound)
-   cannot create an interception loop.
+You can add applications by:
 
-The full design analysis behind this approach is in
-`docs/ARCHITECTURE_RESEARCH.md`.
+* Running processes
+* Executable files
+* Application folders
 
-## Requirements
+Non-selected applications can continue using the normal Windows network path.
 
-- Windows 10 / 11 (x64)
-- .NET 10 — **SDK** to build, **Desktop Runtime (x64)** to run
-- **Administrator privileges** to start routing (WinDivert loads a kernel
-  driver; everything else — configuration, process enumeration, the SOCKS5
-  client — works without elevation)
+### 🌐 IP & Domain Rules
 
-Stack: C# / .NET 10, WPF, WinDivert, SOCKS5, xUnit, JSON settings.
+Create destination-based routing rules using:
+
+* IP addresses
+* IP ranges
+* Domains
+* Destination ports
+
+This allows routing behavior to be refined beyond simple application selection.
+
+### 🔐 SOCKS5 Proxy Profiles
+
+Create and manage multiple SOCKS5 proxy configurations.
+
+Proxy profiles can be tested before use, making it easier to verify connectivity and configuration.
+
+### 📡 DNS Relay
+
+Open NetRoute includes an implemented DNS relay designed to send supported DNS traffic through the configured proxy.
+
+The DNS path uses **SOCKS5 UDP ASSOCIATE** and can relay traditional UDP/53 DNS queries and responses.
+
+DNS relay improves DNS privacy for supported traffic, but it should **not** be considered a guarantee of completely leak-proof DNS protection.
+
+Some applications and protocols can bypass traditional DNS interception, including:
+
+* DNS-over-HTTPS (DoH)
+* DNS-over-TLS (DoT)
+* Custom application resolvers
+* Some system-level DNS behavior
+* Other encrypted or application-specific networking mechanisms
+
+See [DNS documentation](docs/DNS.md) for details.
+
+### 📊 Data Usage
+
+Track traffic usage for proxy configurations, including:
+
+* Upload traffic
+* Download traffic
+* Total traffic
+* Current-session statistics
+* Historical usage
+
+### ⚡ Tunnel Optimization
+
+Open NetRoute provides networking optimization options such as:
+
+* Automatic MTU handling
+* Game Mode
+* DNS resolver preferences
+* Connection-related optimizations
+
+These settings are designed to help adapt the proxy tunnel to different network environments.
+
+### 🖥️ Windows Tray Integration
+
+Open NetRoute can run in the Windows system tray.
+
+Available options include:
+
+* Start with Windows
+* Minimize to tray
+* Hide the window when closed
+* Restore the application from the tray
+
+### 🎨 Desktop UI
+
+The application provides a native Windows desktop interface for managing:
+
+* Proxy profiles
+* Application rules
+* IP/domain rules
+* Traffic statistics
+* DNS behavior
+* Network optimization
+* Startup and tray behavior
+* Appearance
+
+## How It Works
+
+Open NetRoute does not create a VPN connection and does not change the Windows routing table.
+
+Instead, it watches network traffic and checks which application the traffic belongs to.
+
+When traffic belongs to an application that you selected, Open NetRoute sends it through your SOCKS5 proxy.
+
+The basic flow looks like this:
+
+```text
+Selected Application
+        |
+        v
+    Open NetRoute
+        |
+        v
+     SOCKS5 Proxy
+        |
+        v
+      Internet
+````
+
+Applications that are not selected can continue using the normal Windows network connection.
+
+For more technical information, see [Architecture](docs/ARCHITECTURE.md).
 
 ## Installation
 
-No packaged releases yet. Build a distributable folder from source:
+There are two ways to install Open NetRoute.
+
+### Option 1: Download the Beta Release
+
+The easiest way to use Open NetRoute is to download the latest Beta from the GitHub Releases page.
+
+Go to the Releases section of the repository and download the latest Windows build.
+
+After extracting the files:
+
+1. Open the Open NetRoute folder.
+2. Find the Open NetRoute executable.
+3. Right-click it.
+4. Select `Run as administrator`.
+5. Configure your SOCKS5 proxy.
+6. Add the applications you want to route.
+7. Press `START`.
+
+Open NetRoute needs to be run as administrator because it needs access to Windows network traffic through WinDivert.
+
+> Always download releases from the official Open NetRoute repository.
+
+### Option 2: Build From Source
+
+If you prefer to build Open NetRoute yourself, you can clone the repository and build it with the .NET SDK.
+
+Requirements:
+
+* Windows 10 or Windows 11
+* .NET 10 SDK
+* .NET 10 Desktop Runtime
+* Administrator access
+
+Clone the repository:
 
 ```bash
-dotnet publish src/ProxyApp -c Release -r win-x64 --self-contained false -o dist/ProxyApp
+git clone https://github.com/soheilsoufiani/OpenNetRoute.git
+cd OpenNetRoute
 ```
 
-This writes a ready-to-copy `dist\ProxyApp` folder — `ProxyApp.exe` plus the
-runtime files, with `WinDivert.dll` and `WinDivert64.sys` deployed next to it
-automatically (keep the files together). The output requires the **.NET 10
-Desktop Runtime (x64)** on the machine where it runs. Launch `ProxyApp.exe`
-**as Administrator**.
-
-## Usage
-
-1. **Proxies tab** — create a profile or paste a `socks5://` URI, test it,
-   pick the fastest. The selected profile is used on START.
-2. **Applications tab** — add rules from running processes, by browsing for an
-   executable, or as a folder bundle; toggle individual rules on/off.
-3. Press **START**; the status bar shows the engine state, and the **Debug**
-   window shows per-connection events live.
-4. Press **STOP** to tear all ferry flows down and return to the normal
-   network path.
-
-## Tray & startup
-
-- The **notification-area icon** mirrors the engine state: a tooltip and menu
-  line show *Stopped* / *Routing via \<profile\>*, and a green badge is drawn
-  on the icon while routing. Left-click (or **Open**) brings the window back.
-- The tray menu can **start/stop routing** — the same validated start/stop
-  path as the window toggle; when the window is hidden the outcome is
-  announced with a balloon notification instead of the status bar.
-- The Settings tab controls the behavior:
-  - **Enable tray icon** (default: on). Turning it off removes the icon;
-    close-to-tray and minimize-to-tray are then disabled too, so the window
-    can never become unreachable.
-  - **Close button minimizes to tray** (default: on) — the ✕ button hides the
-    window and the engine keeps routing; exit lives in the tray menu. Set it
-    to *Exit* if you prefer the classic behavior.
-  - **Minimize button hides to tray** (default: on) — same idea for the
-    minimize button.
-  - **Start minimized to tray** (default: off) — the next launch begins
-    hidden in the notification area with a balloon notice.
-- **Auto-start with Windows** registers the executable (quoted path) under
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for the **current user
-  only** — no admin rights, no services, no scheduled tasks. The checkbox
-  mirrors the registry (the single source of truth); a failed registry write
-  is reported as an error and never silently ignored.
-
-## SOCKS5 configuration
-
-- Host + port, optional username/password (RFC 1929) or no authentication
-  (RFC 1928 method negotiation).
-- Profiles can be imported by pasting a standard
-  `socks5://user:pass@host:port` URI (missing port defaults to 1080).
-- Passwords are **encrypted at rest with Windows DPAPI** (`CurrentUser`
-  scope): only the same Windows user account can decrypt them, and no
-  plaintext password ever touches disk or log output — log lines show a masked
-  URI (`socks5://user:***@host:port`).
-- A local SOCKS5 inbound (`127.0.0.1` from v2ray/Xray/sing-box) is a valid
-  profile; the ferry never captures loopback traffic.
-
-## Application rules
-
-- Match by **executable name** (`chrome.exe`) or by **full executable path**;
-  a rule may carry either or both.
-- Rules are evaluated **in list order** — the **first enabled rule that
-  matches wins**; disabled rules are skipped and never block later rules.
-- **No match → Direct**: the traffic passes through untouched.
-- **Per-rule proxy**: each rule can pin one of the saved proxy profiles
-  (the PROXY column for exe rules, "Via proxy" in the bundle details for
-  folders). *Default* means the active proxy selected on the Proxies tab.
-  A pin whose profile was deleted or is disabled falls back to the active
-  proxy (visible in the log), never drops the connection.
-
-## Administrator requirements
-
-The application manifest runs the process `asInvoker` on purpose — Windows
-will not auto-elevate it; launch it explicitly as Administrator. If routing is
-started without elevation, the WinDivert open fails and the app reports the
-exact error with a human explanation (e.g. `ERROR_FILE_NOT_FOUND` → the
-`WinDivert64.sys` driver was not found, `ERROR_SERVICE_DOES_NOT_EXIST` → the
-driver service is not installed) instead of failing silently.
-
-## Settings storage
-
-All settings (proxy profiles, selected profile, application rules, bundle
-assignments, theme and accent, connection-test preference, tray preferences,
-window placement) are persisted as JSON to:
-
-```
-%APPDATA%\OpenNetRoute\settings.json
-```
-
-- Coming from the previous **MyProxy** build? The old `%APPDATA%\MyProxy\settings.json`
-  is copied to the new location automatically on first start (the old file is
-  kept as a backup and never deleted).
-- Writes are **atomic** (temp file + replace); a crash mid-save cannot corrupt
-  the file. A damaged file is quarantined (`*.corrupt-*`) and the app starts
-  with defaults — data stays recoverable by hand.
-- Proxy **passwords are encrypted at rest with Windows DPAPI**
-  (`CurrentUser` scope): only the same Windows user account can decrypt them,
-  and no plaintext password ever touches disk or log output. Log lines show a
-  masked URI (`socks5://user:***@host:port`).
-- The full state is flushed on close; edits during the session are saved
-  incrementally (immediately for structural changes such as adding or deleting
-  a profile, debounced while typing).
-- The **auto-start registration is NOT stored here** — the HKCU `Run` value is
-  the single source of truth for that setting (see [Tray & startup](#tray--startup)).
-
-## Limitations (please read)
-
-- **TCP only.** UDP, QUIC/HTTP-3, and ICMP are never captured. QUIC-capable
-  applications (modern browsers) can send some traffic **direct** over UDP
-  443, bypassing the proxy.
-- **DNS leaks.** The ferry intercepts TCP SYNs whose destination is already an
-  IP literal. Applications that resolve hostnames themselves — the dominant
-  case — query the system resolver **directly**, outside the tunnel. **Do not
-  assume any DNS-leak protection.** The design for closing this gap is in
-  `docs/DNS-DESIGN.md` (implementation pending).
-- **IPv4 only.** The capture filter matches IPv4; outbound IPv6 TCP bypasses
-  the ferry entirely and goes direct. (The SOCKS5 client itself is
-  IPv6-capable and tested against IPv6 destinations.)
-- **DoH / DoT** (DNS over HTTPS/TLS) cannot be intercepted by design.
-- Antivirus products occasionally flag WinDivert-based tools; the bundled
-  binaries are the unmodified official WinDivert build.
-- No installer yet; a folder copy of the build output is the distribution.
-
-## Development status (Phase checklist)
-
-- [x] Phase 0 — Solution, project structure, test projects, MIT license
-- [x] Phase 1 — Configuration models + validation + `socks5://` URI parsing
-- [x] Phase 2 — SOCKS5 client (RFC 1928 CONNECT; no-auth + RFC 1929
-      username/password; IPv4/IPv6/domain destinations; timeouts; cancellation)
-- [x] Phase 3 — Process discovery (cached Windows TCP table)
-- [x] Phase 4 — WinDivert integration (spike-validated; actionable error mapping)
-- [x] Phase 5 — Process-to-connection mapping (SYN-time attribution)
-- [x] Phase 6 — TCP redirection engine (ferry; parallel CONNECT; exactly-once relay)
-- [x] Phase 7 — Application rules (first-enabled-match-wins engine)
-- [ ] Phase 8 — DNS behavior (**design only** — leaks today; see `docs/DNS-DESIGN.md`)
-- [ ] Phase 9 — IPv6 behavior (interception is IPv4-only today)
-- [x] Phase 10 — WPF GUI (profiles, rules, bundles, debug window, themes)
-- [x] Phase 11 — Tray application (icon + menu with Open / Start-Stop / status
-  / Exit, close- and minimize-to-tray, start-minimized, per-user auto-start)
-- [ ] Phase 12 — Logging (in progress: in-app debug window with bounded event
-      log and per-connection summaries; broader structured logging pending)
-
-## Building from source
-
-Prerequisite: a **.NET 10 SDK**.
+Build the project:
 
 ```bash
-dotnet restore
 dotnet build
-dotnet test
 ```
 
-For a distributable Release build, use the publish command from
-[Installation](#installation).
+To create a Release build:
 
-All 308 tests pass; the end-to-end ferry tests that need the WinDivert driver
-**skip gracefully** in a non-elevated shell — run the suite from an elevated
-shell to execute them for real. They use a local SOCKS5 test server, never an
-external proxy, and clean up after themselves. For a manual end-to-end check
-against a real proxy, follow `docs/LIVE_APP_SMOKE_TEST.md`.
-
-## Project structure
-
-```
-src/
-    ProxyApp/            WPF application shell (UI only; no networking code)
-    ProxyApp.Core/       Platform-independent logic (config, rules, validation, persistence)
-    ProxyApp.Network/    SOCKS5 protocol and TCP connection handling
-    ProxyApp.WinDivert/  WinDivert integration + the TCP ferry (capture, injection)
-    ProxyApp.Processes/  Windows process enumeration and connection mapping
-tests/
-    ProxyApp.Core.Tests/          Configuration, rules, persistence, URI parsing
-    ProxyApp.Network.Tests/       SOCKS5 negotiation, auth, CONNECT, timeouts
-    ProxyApp.IntegrationTests/    Ferry end-to-end against a local SOCKS5 server
-docs/
-    ARCHITECTURE_RESEARCH.md      Full design analysis of the ferry approach
-    DNS-DESIGN.md                 Phase 8 DNS analysis, experiments, and status
-    WINDIVERT_SPIKE.md            Driver feasibility experiments and results
-    LIVE_APP_SMOKE_TEST.md        Manual end-to-end smoke-test script
-spikes/
-    WinDivertSpike/               Standalone experiments that validated the design
+```bash
+dotnet publish -c Release
 ```
 
-## Acknowledgments
+After building the application, run Open NetRoute with:
 
-- [TunnelX](https://github.com/MaxiFan/TunnelX) (GPL-3.0-or-later) — studied
-  as reference material during the design phase; several tunnel-optimization
-  ideas (automatic MTU, DNS caching/stale-serving, Game-Mode packet tuning)
-  were inspired by its behavior. **No source code was copied or ported** —
-  this project implements everything independently for a SOCKS5-ferry
-  architecture, under MIT.
+`Right click -> Run as administrator`
+
+## Quick Start
+
+### 1. Add a Proxy
+
+Open the `Proxies` tab.
+
+Create a new SOCKS5 proxy profile and enter your proxy information.
+
+You can use `Test Ping` or the proxy test option to check the connection.
+
+### 2. Add an Application
+
+Open the `App Rules` tab.
+
+Add the application you want to route through the proxy.
+
+You can select:
+
+* A running application
+* An `.exe` file
+* An application folder
+
+### 3. Add IP or Domain Rules
+
+If you need more control, open `IP/Domain Rules`.
+
+Add any IP addresses, domains, or ports that you want to handle with your routing rules.
+
+### 4. Check DNS Settings
+
+Open `Settings` and check the DNS section.
+
+If you want Open NetRoute to relay supported DNS requests through the proxy, enable the DNS relay option and choose your preferred DNS resolver.
+
+Keep in mind that DNS relay does not cover every type of DNS traffic.
+
+### 5. Start Open NetRoute
+
+Press the green `START` button.
+
+The selected applications will now use the configured proxy.
+
+### 6. Check Your Traffic
+
+Open `Data Usage` to see the current traffic and traffic history.
+
+You can also use the `Debug` option if you need to investigate a connection problem.
+
+## DNS and Privacy
+
+Open NetRoute includes DNS relay support for traditional DNS traffic.
+
+The basic flow is:
+
+```text
+Application
+     |
+     v
+DNS Request
+     |
+     v
+Open NetRoute
+     |
+     v
+SOCKS5 Proxy
+     |
+     v
+DNS Server
+```
+
+This can help prevent supported DNS requests from going directly through the normal DNS path.
+
+However, Open NetRoute does not currently promise 100% DNS leak protection.
+
+Some applications and services use different ways to resolve DNS, including:
+
+* DNS over HTTPS
+* DNS over TLS
+* Their own DNS resolver
+* Other encrypted DNS methods
+
+Some specialized DNS leak tests may still detect DNS exposure.
+
+For more information, see [DNS.md](docs/DNS.md).
+
+## Limitations
+
+Open NetRoute is still a Beta project and is not a complete VPN replacement.
+
+Some known limitations are:
+
+* Some IPv6 traffic may require additional handling.
+* QUIC traffic is different from normal TCP traffic and may not be handled in the same way.
+* Some UDP applications may need additional support.
+* DNS over HTTPS and DNS over TLS are not automatically handled by the DNS relay.
+* Some applications use their own networking or DNS systems.
+* DNS relay does not guarantee complete DNS leak protection.
+* Windows services can sometimes create network traffic separately from the application that requested it.
+* Antivirus and firewall software may interfere with WinDivert.
+* Network behavior can be different between applications and Windows configurations.
+
+For more technical details, see [Architecture](docs/ARCHITECTURE.md).
+
+## Testing
+
+Open NetRoute includes automated tests for parts of the application.
+
+For a simple manual test of the complete application, see [Smoke Test](docs/SMOKE_TEST.md).
+
+The smoke test covers:
+
+* Starting the application
+* Configuring a SOCKS5 proxy
+* Routing a selected application
+* Checking a non-selected application
+* DNS behavior
+* Starting and stopping the tunnel
+* Restarting the application
+* Handling an unavailable proxy
+
+## Development Note
+
+Open NetRoute was entirely vibe coded.
+
+The project was built through an iterative process of using AI-assisted development, testing the result, finding problems, and improving the implementation step by step.
+
+The project is still maintained and tested as a normal software project, with the application code, tests, documentation, and experimental work kept separate.
+
+## Reference
+
+**Inspired by:** The development of Open NetRoute was informed by studying [TunnelX](https://github.com/MaxiFan/TunnelX?utm_source=chatgpt.com) and its approach to Windows traffic interception and application-level routing. Open NetRoute is an independent implementation.
+
+## Contributing
+
+Bug reports, testing feedback, and contributions are welcome.
+
+When reporting a problem, please include:
+
+* Windows version
+* Open NetRoute version
+* Application being routed
+* SOCKS5 proxy type
+* The protocol involved, if known
+* Steps to reproduce the problem
+* Relevant error messages or logs
+
+Please do not include proxy passwords, private keys, or other sensitive information in issues or pull requests.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Open NetRoute is licensed under the MIT License.
 
-Third-party components:
+See [LICENSE](LICENSE) for the full license text.
 
-- **WinDivert** (`WinDivert.dll`, `WinDivert64.sys`) is dual-licensed
-  LGPL-3.0-or-later / GPL-2.0; the binaries are used unmodified and WinDivert's
-  license notices must be retained when the binaries are redistributed.
-- [TunnelX](https://github.com/MaxiFan/TunnelX) is third-party GPL material
-  consulted for study only; no code is copied or ported from it.
-- **Icons8** — the edit and share (copy) toolbar icons are based on icons from
-  [Icons8](https://icons8.com); used under the Icons8 license, which requires
-  this attribution. The remaining UI icons are original path geometry.
+Open NetRoute also uses third-party components that have their own licenses and terms.
+
+## Documentation
+
+* [Architecture](docs/ARCHITECTURE.md)
+* [DNS](docs/DNS.md)
+* [Smoke Test](docs/SMOKE_TEST.md)
+
+## Disclaimer
+
+Open NetRoute is provided as-is during the Beta stage.
+
+Network behavior can be different depending on the application, Windows version, firewall, antivirus software, proxy server, and network configuration.
+
+If you use Open NetRoute for privacy or security purposes, make sure to test the behavior that is important to you before relying on it.
+
