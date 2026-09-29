@@ -144,7 +144,7 @@ There are two ways to install Open NetRoute.
 
 ### Option 1: Download from GitHub Releases page
 
-The easiest way to use Open NetRoute is to download the latest version from the GitHub Releases page.
+The easiest way to use Open NetRoute is to download the latest version from the [GitHub Releases page](https://github.com/soheilsoufiani/OpenNetRoute/releases).
 
 Go to the Releases section of the repository and download the latest Windows build.
 
