@@ -7,7 +7,7 @@ Open NetRoute is a Windows desktop application that lets you route selected appl
 
 Instead of changing the Windows routing table or creating a VPN interface, Open NetRoute uses **WinDivert** and a user-space forwarding layer to intercept and route selected application traffic.
 
-Here's [Installation](readme.md#installation) and [Quick Start](readme.md#quick-start) Guide
+Here's [Installation](README.md#installation) and [Quick Start](README.md#quick-start) Guide
 > **Beta:** Open NetRoute is currently in active Beta development. The core application-routing and SOCKS5 forwarding functionality is implemented, but some network protocols and edge cases remain outside the current scope.
 
 ## Video Preview
