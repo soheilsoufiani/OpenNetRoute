@@ -1,4 +1,4 @@
-[![Open NetRoute Video Preview](https://raw.githubusercontent.com/soheilsoufiani/OpenNetRoute/refs/heads/main/icons/banner.webp?token=GHSAT0AAAAAAEJ34PLPQ5XYJQCERWTCTO2E2V4G5PQ)](VIDEO_URL)
+![Open NetRoute Banner](https://github.com/soheilsoufiani/OpenNetRoute/blob/main/icons/banner.webp)
 # Open NetRoute [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![.NET](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/) [![WPF](https://img.shields.io/badge/framework-WPF-blue.svg)](https://www.cmarix.com/our-services.html)
 
 **Selective application routing for Windows through SOCKS5 proxies.**
@@ -7,7 +7,7 @@ Open NetRoute is a Windows desktop application that lets you route selected appl
 
 Instead of changing the Windows routing table or creating a VPN interface, Open NetRoute uses **WinDivert** and a user-space forwarding layer to intercept and route selected application traffic.
 
-Here's [Installation](README.md#installation) and [Quick Start](README.md#installation) Guide
+Here's [Installation](README.md#installation) and [Quick Start](README.md#quick-start) Guide
 > **Beta:** Open NetRoute is currently in active Beta development. The core application-routing and SOCKS5 forwarding functionality is implemented, but some network protocols and edge cases remain outside the current scope.
 
 ## Video Preview
