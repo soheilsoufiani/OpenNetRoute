@@ -138,12 +138,13 @@ Applications that are not selected can continue using the normal Windows network
 For more technical information, see [Architecture](docs/ARCHITECTURE.md).
 
 ## Installation
+### **Current build only supports Windows 10/11 x64**
 
 There are two ways to install Open NetRoute.
 
-### Option 1: Download the Beta Release
+### Option 1: Download from GitHub Releases page
 
-The easiest way to use Open NetRoute is to download the latest Beta from the GitHub Releases page.
+The easiest way to use Open NetRoute is to download the latest version from the GitHub Releases page.
 
 Go to the Releases section of the repository and download the latest Windows build.
 
@@ -157,9 +158,9 @@ After extracting the files:
 6. Add the applications you want to route.
 7. Press `START`.
 
-Open NetRoute needs to be run as administrator because it needs access to Windows network traffic through WinDivert.
+Open NetRoute needs to be **run as administrator** because it needs access to Windows network traffic through WinDivert.
 
-> Always download releases from the official Open NetRoute repository.
+> Always download releases from the official repository.
 
 ### Option 2: Build From Source
 
