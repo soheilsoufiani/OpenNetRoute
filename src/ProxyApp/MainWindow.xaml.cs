@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
@@ -7,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Navigation;
 using System.Windows.Threading;
 using ProxyApp.Core.Configuration;
 using ProxyApp.Core.Persistence;
@@ -2734,6 +2736,20 @@ public partial class MainWindow : Window
 
     private void OnDebugClicked(object sender, RoutedEventArgs e) =>
         OpenDebugLogWindow();
+
+    /// <summary>Opens Help-tab links (GitHub) in the default browser.</summary>
+    private void OnHelpLinkNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        e.Handled = true;
+        try
+        {
+            Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _logPanel.Log("WARN", $"Could not open link {e.Uri.AbsoluteUri}: {ex.Message}");
+        }
+    }
 
     /// <summary>
     /// True for an explicit exit (tray Exit / real close) — bypasses

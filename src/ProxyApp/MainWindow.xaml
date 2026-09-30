@@ -884,6 +884,164 @@
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
+
+            <!-- ═══ TAB: HELP ═══ -->
+            <TabItem Header="Help">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+                    <StackPanel MaxWidth="720" HorizontalAlignment="Center" Margin="0,0,0,16">
+
+                        <!-- Single help card: banner, about + GitHub, then every
+                             subject as an Expander (collapsed except the first)
+                             so the tab stays compact until a subject is opened. -->
+                        <Border Style="{StaticResource CardStyle}">
+                            <StackPanel>
+                                <Image Source="/Assets/banner.png" Stretch="Uniform"
+                                       MaxHeight="180" Margin="0,0,0,12"
+                                       RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="About Open NetRoute"/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,10">
+                                    Selective application routing for Windows through SOCKS5 proxies. It routes
+                                    <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">only the applications you choose</Run>
+                                    through the proxy — everything else keeps using the normal Windows connection.
+                                    <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">No VPN interface, no routing-table changes.</Run>
+                                </TextBlock>
+                                <TextBlock TextWrapping="Wrap" Margin="0,0,0,6">
+                                    <Hyperlink NavigateUri="https://github.com/soheilsoufiani/OpenNetRoute"
+                                               RequestNavigate="OnHelpLinkNavigate"
+                                               ToolTip="Open the Open NetRoute repository on GitHub">
+                                        GitHub: github.com/soheilsoufiani/OpenNetRoute
+                                    </Hyperlink>
+                                </TextBlock>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,12"
+                                           Text="Get releases, report issues, and read the docs there. Open NetRoute is MIT licensed (Beta)."/>
+
+                                <Expander Header="How it works" IsExpanded="True" Margin="0,2,0,2"
+                                          FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="16,6,0,0" FontWeight="Normal">
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Selected App → Open NetRoute → SOCKS5 Proxy → Internet.</Run>
+                                        Open NetRoute watches outbound traffic
+                                        (<Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">WinDivert, administrator required</Run>),
+                                        checks which application each connection belongs to, and forwards the selected ones through your SOCKS5 proxy.
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Unselected applications pass through directly.</Run>
+                                    </TextBlock>
+                                </Expander>
+
+                                <Expander Header="Proxies tab" Margin="0,2,0,2"
+                                          FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="16,6,0,0" FontWeight="Normal">
+                                        SOCKS5 proxy profiles.
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Click a card to make it the active profile that START routes through.</Run>
+                                        New… creates a profile; Paste Config imports a socks5:// URL; Test Ping checks every profile (handshake + CONNECT, 5 s timeout);
+                                        Sort: Fastest orders by last ping; Delete All removes all profiles; Restart restarts the engine with the selected profile.
+                                        Per-card buttons: Edit, Share (copy as socks5:// URL), Delete.
+                                    </TextBlock>
+                                </Expander>
+
+                                <Expander Header="App Rules tab" Margin="0,2,0,2"
+                                          FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="16,6,0,0" FontWeight="Normal">
+                                        Which applications use the tunnel. Add Running Processes… (picker), Add EXE… (single file), or Add Folder…
+                                        (folder bundle covering every .exe under it, including ones added later).
+                                        Each manual rule has a
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">ROUTE</Run>
+                                        combo:
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Disabled</Run> (rule off),
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Direct</Run> (bypass the proxy),
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Default Proxy</Run> (the active Proxies-tab profile),
+                                        or a pinned saved profile. Click a PATH cell to copy it. Click a bundle chip to enable/disable; Shift+click for details.
+                                    </TextBlock>
+                                </Expander>
+
+                                <Expander Header="IP/Domain Rules tab" Margin="0,2,0,2"
+                                          FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="16,6,0,0" FontWeight="Normal">
+                                        Destination rules, evaluated
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">BEFORE App Rules</Run>
+                                        — a per-destination choice wins over an app-wide pin.
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">MATCH</Run>
+                                        is an IPv4 address or domain with optional :port (1.2.3.4, 1.2.3.4:443, example.com, example.com:8443).
+                                        Fields are locked: click Edit to type, then Save (Cancel discards). Same ROUTE choices as App Rules.
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">IPv6 destinations never match;</Run>
+                                        domains resolve at connection time. Apps with their own encrypted DNS (DoH/DoT) bypass domain matching.
+                                    </TextBlock>
+                                </Expander>
+
+                                <Expander Header="Data Usage tab" Margin="0,2,0,2"
+                                          FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="16,6,0,0" FontWeight="Normal">
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Live</Run>
+                                        shows current-session upload / download / total speeds plus session totals (tracking starts at START).
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">History</Run>
+                                        shows cumulative traffic per proxy configuration across all sessions, merged live with the running session.
+                                    </TextBlock>
+                                </Expander>
+
+                                <Expander Header="Settings tab" Margin="0,2,0,2"
+                                          FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <StackPanel Margin="16,6,0,0">
+                                        <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,6" FontWeight="Normal">
+                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">DNS:</Run>
+                                            relay supported DNS (UDP 53, IPv4)
+                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">system-wide</Run>
+                                            through the proxy via
+                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">SOCKS5 UDP ASSOCIATE</Run>
+                                            — cannot be limited to selected apps. Pick the resolver relayed queries go to, optionally relay STUN for WebRTC.
+                                            Applies at <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">next START</Run>;
+                                            disable if your proxy lacks UDP support. Not covered: DoH/DoT, custom resolvers, IPv6 DNS.
+                                        </TextBlock>
+                                        <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,6" FontWeight="Normal">
+                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Appearance:</Run>
+                                            Light / Dark / System theme.
+                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Automation:</Run>
+                                            test proxy on save.
+                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Tunnel optimization:</Run>
+                                            Automatic MTU and Game Mode (low-latency tuning), applied at next START.
+                                        </TextBlock>
+                                        <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" FontWeight="Normal">
+                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Tray icon &amp; startup:</Run>
+                                            tray icon with Open / Start-Stop / Exit, start minimized, minimize-to-tray, Close-button behavior, and launch with Windows sign-in.
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Expander>
+
+                                <Expander Header="Bottom bar, Debug &amp; tray" Margin="0,2,0,2"
+                                          FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="16,6,0,0" FontWeight="Normal">
+                                        The bottom bar is always visible:
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Status</Run> text plus the
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Debug</Run> button (full session log window)
+                                        and the <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">START/STOP</Run> toggle.
+                                        The tray icon (when enabled) keeps routing while the window is hidden — Exit lives in the tray menu.
+                                    </TextBlock>
+                                </Expander>
+
+                                <Expander Header="Quick Start" Margin="0,2,0,2"
+                                          FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="16,6,0,0" FontWeight="Normal">
+                                        1.
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Run as administrator.</Run>
+                                        2. Proxies tab: add a profile, Test Ping. 3. App Rules tab: add the app to route.
+                                        4. Optional: IP/Domain Rules for finer control. 5. Settings: check DNS relay.
+                                        6. Press <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">START</Run>.
+                                        7. Data Usage: confirm traffic; Debug: investigate problems.
+                                    </TextBlock>
+                                </Expander>
+
+                                <Expander Header="Requirements &amp; limitations" Margin="0,2,0,2"
+                                          FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">
+                                    <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="16,6,0,0" FontWeight="Normal">
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Windows 10/11 x64, administrator rights</Run>
+                                        (WinDivert needs them). Beta: partial IPv6 / QUIC / UDP coverage, no DoH/DoT handling, no guaranteed leak-proof DNS.
+                                        Antivirus/firewalls may interfere with traffic interception. Test what matters to you before relying on it.
+                                    </TextBlock>
+                                </Expander>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
         </TabControl>
 
         <!-- Persistent bottom action bar (engine controls visible on every tab) -->

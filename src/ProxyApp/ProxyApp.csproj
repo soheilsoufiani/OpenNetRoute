@@ -41,6 +41,8 @@
          attribute). Asset copied from /icons/ico_pack_256x256_icon.ico, which
          carries all sizes 16–256 as frames of a single multi-size file. -->
     <Resource Include="Assets\app.ico" />
+    <!-- Help-tab banner (loaded via pack URI by MainWindow's Help tab). -->
+    <Resource Include="Assets\banner.png" />
   </ItemGroup>
 
   <ItemGroup>
