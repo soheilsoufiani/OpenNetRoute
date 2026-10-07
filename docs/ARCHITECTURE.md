@@ -104,9 +104,20 @@ The SOCKS5 proxy remains external to Open NetRoute. Open NetRoute is responsible
 
 ## UDP and DNS
 
-UDP traffic is handled separately from the TCP ferry.
+Plaintext DNS is handled separately from the TCP ferry, and is intercepted on **both** of its transports:
 
-For DNS traffic, Open NetRoute can capture UDP DNS requests and forward them through the SOCKS5 proxy using SOCKS5 UDP ASSOCIATE. Responses are then injected back toward the requesting application.
+| Transport | Capture | Relayed via |
+|---|---|---|
+| UDP/53, IPv4 | `outbound and ip and udp and udp.DstPort == 53` | SOCKS5 UDP ASSOCIATE |
+| UDP/53, IPv6 | `outbound and ipv6 and udp and udp.DstPort == 53` | SOCKS5 UDP ASSOCIATE |
+| TCP/53, IPv4 | the TCP ferry's capture filter, with port 53 as a forced-proxy port | SOCKS5 CONNECT |
+| TCP/53, IPv6 | a second TCP-ferry handle, `outbound and ipv6 and tcp and tcp.DstPort == 53` | SOCKS5 CONNECT |
+
+Each address family needs its own handle because a WinDivert filter expression cannot mix `ip` and `ipv6`. The TCP leg exists because Windows falls back to TCP/53 for truncated answers and some resolvers are TCP-only; the UDP leg alone would leave those queries on the direct path.
+
+The IPv6 TCP handle is scoped to DNS only. The general TCP ferry stays IPv4-only — extending IPv6 capture to all traffic would change routing for every selected application, which is a separate decision. Because a WinDivert handle only admits packets its own layer and filter accept, each flow records the handle its SYN arrived on (`FlowState.SendHandle`) and every injection toward that flow goes through it.
+
+Both legs are **system-wide**. Windows generates app DNS in the DNS Client service (`svchost`, `dnscache`), so a per-application gate would never match the selecting process.
 
 The DNS path is approximately:
 
@@ -114,30 +125,53 @@ The DNS path is approximately:
 Application
     │
     ▼
-UDP DNS Query
+Plaintext DNS query (UDP/53 or TCP/53, IPv4 or IPv6)
     │
     ▼
 WinDivert
     │
     ▼
-DNS Relay
+DNS relay
     │
     ▼
-SOCKS5 UDP ASSOCIATE
+SOCKS5 (UDP ASSOCIATE or CONNECT)
     │
     ▼
-Configured DNS Server
+Configured DNS server
     │
     ▼
-DNS Response
+DNS response
     │
     ▼
 Application
 ```
 
-DNS relay is implemented, but it should not be considered a guarantee of completely leak-proof DNS protection. Some specialized DNS leak-testing scenarios can still identify DNS-related exposure depending on the application and protocol being used.
+Relay failures are **fail-closed**: an unparsable packet, an unavailable association, or a timeout all drop the query instead of releasing it directly. The Windows resolver cache is flushed at START and STOP so pre-START answers cannot be served without interception.
 
-See [DNS.md](DNS.md) for the current DNS behavior and known limitations.
+### Encrypted DNS: observed, not relayed
+
+A separate **passive** component, `DnsSniInspector`, opens a handle in `SNIFF | RECEIVE_ONLY` mode on outbound TCP/443 and reads the TLS ClientHello's SNI extension. That hostname is sent in the clear by design (RFC 6066 §3 — the server name must be readable before session keys exist), so no decryption is involved.
+
+Sniff mode is what makes it safe: the handle **copies** matching packets and lets the real ones continue. It cannot consume, delay, reorder, inject or drop, so it cannot affect routing, cannot break the tunnel, and cannot itself cause a leak. It runs only while the DNS relay is on, and its failure costs visibility rather than connectivity.
+
+When a connection to a known resolver endpoint is seen, the log and the Data Usage tab name the process, destination and resolver. This turns "the leak test lists resolvers I don't recognize" into a specific fact. It is a diagnostic — nothing is blocked.
+
+Its limits are real: Encrypted ClientHello hides the hostname entirely (counted and surfaced as a blind spot), and DoH over QUIC/HTTP3 carries no TLS-over-TCP ClientHello at all. Hostname matching is exact-only, because a suffix match would flag `www.cloudflare.com` as a leak — and for a user whose proxy egress is Cloudflare that would report every page load as a problem.
+
+What remains outside interception is encrypted DNS (DoH/DoT/DoQ) and custom resolvers on non-standard ports — these cannot be relayed without TLS interception.
+
+### WebRTC/STUN: blocked by content, relayed by port
+
+A third, deliberately separate component, `StunBlocker`, exists because **matching STUN by port does not work**. The port travels inside the WebRTC server URI, so a STUN server may listen anywhere; a port list looks correct, matches nothing, and silently leaks. `StunMessage.IsStun` instead identifies a STUN address-discovery message by the RFC 5389 §6 magic cookie `0x2112A442` at offset 4, plus the spec's two-high-bits-zero requirement on the message type. The port is never consulted.
+
+Its filter is therefore much broader than the ferry's — outbound UDP excluding loopback and port 53 — which has a real cost: broad UDP traffic is copied into the process to inspect four bytes. Two consequences shape the design:
+
+* **It is a separate handle, never a leg of the DNS ferry.** Two diverting handles matching one datagram is a race over who re-injects it, not redundancy. Only one component may own a given packet, so the ferry captures STUN *only* when relaying it, and the blocker's filter excludes port 53 so it cannot collide with the DNS relay.
+* **Its capture loop is synchronous and await-free.** If the queue overflows while this loop is descheduled, WinDivert drops packets at the driver — which for a broad filter would affect unrelated traffic, not just WebRTC.
+
+Media is deliberately not blocked: TURN Data / ChannelData reveal nothing once the relay candidate is known, and dropping them would break a working call without improving privacy. What blocking does not cover is TURN over **TCP/TLS**, since a UDP content match cannot see it.
+
+See [DNS.md](DNS.md) for the current DNS and WebRTC behavior and known limitations.
 
 ## Traffic Isolation
 
@@ -239,11 +273,12 @@ The architecture should not be interpreted as a universal VPN replacement.
 Known limitations include:
 
 * protocol-specific handling is required;
-* IPv6 coverage is not equivalent to IPv4 coverage;
-* DoH and DoT can bypass traditional DNS interception;
+* IPv6 coverage is not equivalent to IPv4 coverage for general traffic, though plaintext DNS is intercepted on both families;
 * QUIC and arbitrary UDP traffic require additional handling;
 * some applications use networking mechanisms that are difficult to attribute or intercept reliably;
-* DNS relay does not guarantee complete protection against every possible DNS leak scenario;
+* encrypted DNS (DoH/DoT/DoQ) and custom resolvers on non-standard ports are outside interception — plaintext DNS has no direct-path fallback, but encrypted DNS cannot be observed without TLS interception;
+* WebRTC blocking closes the UDP STUN discovery path on any port, but not TURN over TCP/TLS or TCP STUN, which are outside a UDP content match — a TURN relay obtained over TCP can still report the address;
+* settings sections must be explicitly carried from the UI into the engine's runtime configuration — a section silently reverted to its default looks identical to a feature that is working but idle, which is why this is enforced by test rather than by convention;
 * endpoint behavior can vary across Windows versions, applications, firewall configurations, and security software.
 
 ## Design Goal

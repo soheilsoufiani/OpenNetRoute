@@ -113,11 +113,13 @@ Confirm that normal DNS resolution still works.
 
 Where possible, use an external DNS or leak-testing service to inspect the observed DNS path.
 
-Do not interpret a successful ordinary DNS lookup as proof that there are no DNS leaks.
+With the DNS relay enabled, all **plaintext** DNS (UDP/53 and TCP/53, IPv4 and IPv6) is relayed system-wide and never sent directly. If a leak test shows your ISP's resolver, the app is most likely using **encrypted DNS** (DoH, DoT, DoQ) or a custom resolver on a non-standard port — those are indistinguishable from ordinary HTTPS/TLS and are outside the interception scope.
 
-Open NetRoute includes an implemented DNS relay, but complete leak-proof DNS protection is not guaranteed. Some specialized DNS leak tests may still detect DNS exposure depending on the application, Windows configuration, and protocol being used.
+Confirm the relay is actually active before drawing conclusions:
 
-Applications using DoH, DoT, custom resolvers, or other encrypted DNS mechanisms may behave differently from applications using traditional UDP/53 DNS.
+* the status line should report the DNS relay as active, not failed;
+* the Debug log should show each relayed query and the resolver it was sent to;
+* a `dropped (fail-closed)` entry means the query was blocked, not leaked — usually a proxy without UDP support.
 
 ## 7. Verify Internet Access After Multiple Requests
 
@@ -168,7 +170,79 @@ Verify that:
 
 A successful restart test is particularly useful for identifying stale WinDivert handles, unfinished forwarding sessions, or other lifecycle problems.
 
-## 10. Basic Failure Tests
+## 10. DNS Relay and Encrypted-DNS Detection
+
+Run with the DNS relay enabled in `Settings` › DNS.
+
+### 10.1 Plaintext relay works
+
+Browse normally, then check the **Data Usage** tab's DNS block and the Debug log.
+
+Verify that:
+
+* `relayed` rises and stays close to `captured`;
+* log lines appear per query, naming both the original destination and the relay target: `relaying via proxy to 1.1.1.1:53 (resolver override: 203.0.113.53 -> 1.1.1.1)`;
+* DNS resolution still works in every application, including after the cache flush at START.
+
+### 10.2 Leak test
+
+Run your preferred DNS leak test.
+
+Verify that:
+
+* the resolvers shown are the one configured in Settings (not your ISP) — this is the relay working;
+* the IP address shown is the proxy's, not yours;
+* if your ISP's resolvers appear, the observer in 10.3 names the path that produced them.
+
+Note: a resolver appearing in the result is **not** by itself a leak — what matters is whether your real address is exposed. If your proxy egress and your resolver are the same provider, the two are indistinguishable in the result.
+
+### 10.3 Encrypted-DNS detection
+
+Open a site that uses DoH (or set Chrome's secure DNS to a public resolver), then check the log and the Data Usage tab.
+
+Verify that:
+
+* a line names the process, destination and resolver: `ENCRYPTED DNS (DoH) detected: chrome.exe (...) resolving via https://.../`;
+* the Data Usage tab shows the detection and the observer's counters;
+* **the connection still works** — the observer is passive and must not change routing. If enabling it breaks browsing, that is a bug, not expected behaviour.
+
+### 10.4 Fail-closed behaviour
+
+Expect lookups to fail (a couple of seconds, with client retries) when the relay cannot serve them — for example with a proxy that does not support UDP ASSOCIATE.
+
+Verify that:
+
+* failures appear as `relay FAILED` or `dropped (fail-closed)`, i.e. the query was **blocked, not leaked**;
+* nothing is sent directly as a fallback;
+* turning the relay off restores normal system DNS.
+
+### 10.5 WebRTC / STUN — blocking
+
+Enable **Block WebRTC** in Settings › DNS, restart, and run a WebRTC leak test.
+
+Verify that:
+
+* the log contains `[WebRTC] STUN blocking ACTIVE — matched by message content on ANY port`;
+* `[WebRTC] blocked STUN datagram #N ... content-matched` lines appear — the dropped counter is the only proof the block matched anything, so a run showing zero drops has **not** tested the feature;
+* the Data Usage tab shows `WebRTC: BLOCKING` with a non-zero dropped count;
+* if the Data Usage tab shows `IPv6 blocking is OFF`, IPv6 STUN is unprotected regardless of the counter — browsers prefer IPv6, so this is a real exposure, not a cosmetic note;
+* **in-browser video calls stop working.** That is the intended trade-off, not a regression — with no reachable STUN server WebRTC has no server-reflexive candidate. Confirm it is stated as expected somewhere visible, because it is the most surprising consequence of the setting.
+
+The honest limit to check, and the reason this test exists at all: the earlier port-matched implementation showed the setting as "on", dropped **nothing**, and the page still reported the real address. If the dropped counter is zero while the leak test shows a `srflx` candidate with the real IP, the block is not matching — do not accept the checkbox state as evidence.
+
+### 10.6 WebRTC / STUN — relaying
+
+Disable blocking, enable STUN relaying, restart, and re-run the test.
+
+Verify that:
+
+* STUN lines appear with their **original destination** — a line showing STUN sent to the DNS resolver's address would be the regression this feature previously had;
+* the public address shown is the proxy's;
+* if the Data Usage tab reports 0 captured or any failures, relaying is not working for that server — the STUN server used a port outside the relayed set — and blocking should be used instead.
+
+Also verify the honest limits: TURN over **TCP/TLS** and TCP STUN are outside both options (relaying is port-matched; blocking matches UDP STUN by content). So a leak can still appear over those transports, and that is expected at this stage.
+
+## 11. Basic Failure Tests
 
 For a more useful Beta smoke test, also test a few failure conditions.
 
@@ -215,7 +289,7 @@ A successful smoke test should demonstrate the following:
 | Selected application     | Traffic is routed through the proxy                                                |
 | Non-selected application | Traffic remains on the normal path                                                 |
 | DNS resolution           | DNS continues to function                                                          |
-| DNS privacy              | DNS relay operates where supported, but complete leak prevention is not guaranteed |
+| DNS privacy              | Plaintext DNS (UDP/TCP 53, IPv4 and IPv6) is relayed and never sent directly; encrypted DNS (DoH/DoT/DoQ) is outside scope |
 | Repeated traffic         | Connections remain usable                                                          |
 | Stop                     | Normal networking is restored                                                      |
 | Restart                  | Routing can be enabled again                                                       |
@@ -232,10 +306,9 @@ It does not comprehensively validate:
 * all IPv6 traffic;
 * QUIC;
 * arbitrary UDP applications;
-* DoH;
-* DoT;
-* WebRTC/STUN behavior;
-* every DNS leak scenario;
+* encrypted DNS (DoH, DoT, DoQ) — DoH on TCP/443 is detected and named, but it is neither blocked nor relayed, and DoH over QUIC/HTTP3 and Encrypted ClientHello are not observable at all;
+* custom resolvers on non-standard ports;
+* complete WebRTC/STUN coverage — relayed STUN works, but TURN, non-listed ICE ports and STUN over IPv6 remain outside the relayed set;
 * every firewall or antivirus configuration;
 * every Windows version;
 * every SOCKS5 server implementation.

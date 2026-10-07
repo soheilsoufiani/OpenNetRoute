@@ -44,19 +44,23 @@ Proxy profiles can be tested before use, making it easier to verify connectivity
 
 ### 📡 DNS Relay
 
-Open NetRoute includes an implemented DNS relay designed to send supported DNS traffic through the configured proxy.
+Open NetRoute intercepts **all plaintext DNS system-wide** and relays it through the configured proxy, on both of DNS's transports and both address families:
 
-The DNS path uses **SOCKS5 UDP ASSOCIATE** and can relay traditional UDP/53 DNS queries and responses.
+* **UDP 53 over IPv4 and IPv6** — relayed via SOCKS5 UDP ASSOCIATE
+* **TCP 53 over IPv4 and IPv6** — the fallback transport for truncated answers, relayed via SOCKS5 CONNECT
 
-DNS relay improves DNS privacy for supported traffic, but it should **not** be considered a guarantee of completely leak-proof DNS protection.
+Every query is dropped rather than sent directly if it cannot be relayed (**fail-closed**), and the Windows resolver cache is flushed at START and STOP so pre-START answers cannot bypass the relay. A query that fails takes a moment to retry; that is the intended trade-off versus a silent leak.
 
-Some applications and protocols can bypass traditional DNS interception, including:
+**Encrypted DNS is not relayed, but it is watched.** A passive observer reads the hostname from the TLS ClientHello on outbound TCP/443 (sent in the clear by design) and names the app and resolver doing the encrypted resolving. It opens its handle in sniff mode, so it only copies packets and cannot affect your connection. The Data Usage tab shows its counters, and detections appear in the log while you are still on the leak-test page.
 
-* DNS-over-HTTPS (DoH)
-* DNS-over-TLS (DoT)
-* Custom application resolvers
-* Some system-level DNS behavior
-* Other encrypted or application-specific networking mechanisms
+Not observable: DoH over QUIC/HTTP3, Encrypted ClientHello (reported as an "unreadable" blind spot), and custom resolvers on non-standard ports. Only well-known resolver hostnames are classified, so a zero count means "nothing known was seen", not "nothing is leaking".
+
+**WebRTC:** STUN is handled by one of two mutually exclusive settings, and they recognise it in different ways:
+
+- **Block WebRTC** (recommended) — STUN requests are dropped locally, over IPv4 and IPv6. STUN is matched by its **message content, not by port**, so it does not matter which port the WebRTC server uses. It cannot fail open and needs no UDP support from your proxy. The cost is real: **in-browser video calls stop working.**
+- **Relay STUN** — keeps video calls working by relaying STUN through the proxy, but matches by **port** (3478/3479, 5348/5349, 19302–19309) and needs the proxy to support SOCKS5 UDP ASSOCIATE.
+
+Both work whether or not the DNS relay is on. Neither covers TURN over TCP/TLS, so treat this as strong protection rather than proof. Watch the dropped counter on the Data Usage tab: if it reads zero, nothing was matched.
 
 See [DNS documentation](docs/DNS.md) for details.
 
@@ -69,6 +73,7 @@ Track traffic usage for proxy configurations, including:
 * Total traffic
 * Current-session statistics
 * Historical usage
+* One-click reset of the recorded history and counters
 
 ### ⚡ Tunnel Optimization
 
@@ -223,9 +228,9 @@ Add any IP addresses, domains, or ports that you want to handle with your routin
 
 Open `Settings` and check the DNS section.
 
-If you want Open NetRoute to relay supported DNS requests through the proxy, enable the DNS relay option and choose your preferred DNS resolver.
+If you want Open NetRoute to relay plaintext DNS through the proxy, enable the DNS relay option and choose your preferred DNS resolver.
 
-Keep in mind that DNS relay does not cover every type of DNS traffic.
+Encrypted DNS (DoH/DoT/DoQ) is not covered — see [DNS and Privacy](#dns-and-privacy).
 
 ### 5. Start Open NetRoute
 
@@ -241,38 +246,49 @@ You can also use the `Debug` option if you need to investigate a connection prob
 
 ## DNS and Privacy
 
-Open NetRoute includes DNS relay support for traditional DNS traffic.
-
-The basic flow is:
+Open NetRoute relays **all plaintext DNS** through the proxy, system-wide, on both transports and both address families (UDP/53 and TCP/53, IPv4 and IPv6). While the relay runs, plaintext DNS has no direct path out of the machine — a query that cannot be relayed is dropped, never sent directly.
 
 ```text
 Application
      |
      v
-DNS Request
+Plaintext DNS Query (UDP/53 or TCP/53)
      |
      v
-Open NetRoute
+Open NetRoute  --fail-closed--> dropped if it cannot be relayed
      |
      v
-SOCKS5 Proxy
+SOCKS5 Proxy (UDP ASSOCIATE / CONNECT)
      |
      v
 DNS Server
 ```
 
-This can help prevent supported DNS requests from going directly through the normal DNS path.
+Because a relayed query never goes out directly, the user's configured (typically ISP) resolver stays out of the path. Leak tests show the resolver you configured in Settings instead.
 
-However, Open NetRoute does not currently promise 100% DNS leak protection.
+What the relay cannot cover is **encrypted DNS**:
 
-Some applications and services use different ways to resolve DNS, including:
+* DNS over HTTPS (port 443)
+* DNS over TLS (port 853)
+* DNS over QUIC
+* custom application resolvers on non-standard ports
 
-* DNS over HTTPS
-* DNS over TLS
-* Their own DNS resolver
-* Other encrypted DNS methods
+These cannot be *relayed* without TLS interception, so a browser or app configured for secure DNS resolves through its own encrypted resolver. Everything on the plaintext path is relayed.
 
-Some specialized DNS leak tests may still detect DNS exposure.
+### Finding out what bypasses the relay
+
+A leak test lists resolvers that answered, which is not the same thing as resolvers that leaked your address. So while the relay is running, Open NetRoute **watches** encrypted DNS on TCP/443 and tells you who is using it.
+
+A passive observer reads the hostname from the TLS ClientHello — which is sent in the clear by design, since the server name must be readable before the session keys exist. It opens its capture handle in sniff mode, so it **copies** packets and lets the real ones continue: it cannot consume, delay or drop anything, and cannot affect your connection.
+
+When an app resolves through DoH, the log and the Data Usage tab name it:
+
+```text
+[Sni] ENCRYPTED DNS (DoH) detected: chrome.exe (192.168.1.5:51234 -> 104.16.248.1:443)
+      resolving via https://chrome.cloudflare-dns.com/ — this resolver is NOT relayed through the proxy.
+```
+
+Its limits are worth stating plainly: Encrypted ClientHello hides the hostname (counted and shown as an "unreadable" blind spot rather than silently missed), DoH over QUIC/HTTP3 carries no TLS-over-TCP ClientHello at all, and only well-known resolver hostnames are classified. So a zero count means "nothing known was seen", not "nothing is leaking".
 
 For more information, see [DNS.md](docs/DNS.md).
 
@@ -282,12 +298,12 @@ Open NetRoute is still a Beta project and is not a complete VPN replacement.
 
 Some known limitations are:
 
-* Some IPv6 traffic may require additional handling.
+* Some IPv6 traffic may require additional handling. Plaintext DNS is covered on both address families; general IPv6 TCP routing is IPv4-only by design.
 * QUIC traffic is different from normal TCP traffic and may not be handled in the same way.
 * Some UDP applications may need additional support.
-* DNS over HTTPS and DNS over TLS are not automatically handled by the DNS relay.
+* DNS over HTTPS, DNS over TLS and DNS over QUIC are encrypted, so they cannot be relayed as plaintext DNS — a browser or app using secure DNS resolves through its own encrypted resolver. DoH on TCP/443 is detected and named, but nothing is blocked.
+* WebRTC is not fully blocked. "Block WebRTC" drops STUN address-discovery messages over UDP, matched by message content rather than port, so the port a WebRTC server chooses does not matter. What it does **not** cover: **TURN over TCP or TLS** (443, 5349) and TCP STUN, because those are TCP and outside a UDP match. A TURN relay obtained over TCP can still report your address. "Relay STUN" is weaker still — it matches a fixed port list. Neither option is proof that WebRTC cannot leak, and browser video calls do not work while blocking is on.
 * Some applications use their own networking or DNS systems.
-* DNS relay does not guarantee complete DNS leak protection.
 * Windows services can sometimes create network traffic separately from the application that requested it.
 * Antivirus and firewall software may interfere with WinDivert.
 * Network behavior can be different between applications and Windows configurations.

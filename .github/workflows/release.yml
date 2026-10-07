@@ -68,12 +68,13 @@ jobs:
           - IP and domain rules
           - TCP traffic routing
           - DNS relay through SOCKS5
+          - WebRTC protection: STUN blocking (reliable, but breaks in-browser video calls) or STUN relaying (keeps calls, needs proxy UDP support)
           - Data usage tracking
           - System tray support
           - Tunnel optimization settings
           - Debug and logging support
 
-          DNS relay is implemented, but complete DNS leak protection is not guaranteed. Some applications and protocols, including DoH and DoT, may use other DNS paths.
+          All plaintext DNS is relayed system-wide with no direct-path fallback: UDP 53 and TCP 53, IPv4 and IPv6 (SOCKS5 UDP ASSOCIATE and CONNECT), failing closed if a query cannot be relayed. Encrypted DNS (DoH, DoT, DoQ) cannot be relayed, but DoH on TCP/443 is detected and named by a passive observer; DoH over QUIC and Encrypted ClientHello are not observable.
 
           This is a Beta release, so some applications, protocols, or Windows configurations may behave differently.
 
