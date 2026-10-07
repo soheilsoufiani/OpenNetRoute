@@ -63,4 +63,27 @@ public interface IProxyEngine : IDisposable
     /// Never throws; cheap enough to poll once per second.
     /// </summary>
     UsageSnapshot GetUsageSnapshot();
+
+    /// <summary>
+    /// A snapshot of the DNS relay's health counters plus the encrypted-DNS
+    /// observer's findings (see <see cref="DnsDiagnostics"/>). Returns
+    /// <see cref="DnsDiagnostics.Empty"/> when the DNS relay is off. Never
+    /// throws; cheap enough to poll once per second. Purely informational —
+    /// reading it changes nothing.
+    /// </summary>
+    DnsDiagnostics GetDnsDiagnostics();
+
+    /// <summary>
+    /// The most recent encrypted-DNS (DoH) detection message this session, or
+    /// null when none was seen. Diagnostic only: the connection was NOT blocked.
+    /// </summary>
+    string? LastEncryptedDnsDetection { get; }
+
+    /// <summary>
+    /// Raised when the observer sees a connection to a known encrypted-DNS
+    /// resolver, with a message naming the process, destination and resolver.
+    /// May fire from a background thread — the UI must marshal. Suppressed when
+    /// the DNS relay is off (the observer does not run then).
+    /// </summary>
+    event Action<string>? DnsEncryptedDnsDetected;
 }

@@ -75,4 +75,34 @@ public class ProxyEngineTests
         await engine.StopAsync();
         Assert.False(engine.IsRunning);
     }
+
+    [Fact]
+    public async Task GetDnsDiagnostics_WhenNeverStarted_ReportsTheRelayOff()
+    {
+        // The UI polls this every second and renders it unconditionally, so a
+        // never-started engine must return a usable shape — not null and not a
+        // relay-"Active" claim.
+        using var engine = new ProxyEngine();
+
+        var diagnostics = engine.GetDnsDiagnostics();
+
+        Assert.False(diagnostics.RelayEnabled);
+        Assert.False(diagnostics.SniInspectionActive);
+        Assert.Equal(0, diagnostics.QueriesCaptured);
+        Assert.Equal(0, diagnostics.QueriesRelayed);
+        Assert.Equal(0, diagnostics.EncryptedDnsDetected);
+        Assert.Null(engine.LastEncryptedDnsDetection);
+    }
+
+    [Fact]
+    public async Task StopAsync_WithDiagnosticsRunning_IsStillSafe()
+    {
+        // Stop must tear down the SNI observer alongside the ferries. A leaked
+        // sniff handle would keep observing after STOP, which is a correctness
+        // bug even though it cannot affect routing.
+        using var engine = new ProxyEngine();
+        await engine.StopAsync();
+        await engine.StopAsync(); // idempotent
+        Assert.False(engine.IsRunning);
+    }
 }

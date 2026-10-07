@@ -671,14 +671,62 @@
                                 <TextBlock x:Name="SessionTotalsText" Style="{StaticResource Hint}"
                                            TextWrapping="Wrap" TextAlignment="Center"
                                            Text="This session: 0 B up, 0 B down (0 B total)."/>
+
+                                <!-- ── DNS relay health + encrypted-DNS observer.
+                                     Counters only — they explain what the relay
+                                     is doing and whether an app is resolving
+                                     through an encrypted channel it cannot
+                                     relay. No verdict, no blocking here: this is
+                                     the evidence the Settings toggles act on. ── -->
+                                <Border Margin="0,12,0,0" Padding="10,8"
+                                        CornerRadius="6"
+                                        Background="{DynamicResource CardBrush}"
+                                        BorderBrush="{DynamicResource BorderSubtleBrush}"
+                                        BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource FieldLabel}"
+                                                   Text="DNS relay — this session"/>
+                                        <TextBlock x:Name="DnsDiagnosticsText"
+                                                   Style="{StaticResource Hint}"
+                                                   TextWrapping="Wrap" Margin="0,4,0,0"
+                                                   Text="DNS relay is off — enable it in Settings › DNS."/>
+                                        <!-- Shown only when the observer actually
+                                             detects an encrypted resolver, because
+                                             "encrypted DNS detected" is the single
+                                             most actionable line here. -->
+                                        <TextBlock x:Name="EncryptedDnsWarningText"
+                                                   Style="{StaticResource Hint}"
+                                                   TextWrapping="Wrap" Margin="0,6,0,0"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource WarningBrush}"
+                                                   Visibility="Collapsed"
+                                                   Text="Encrypted DNS (DoH) was detected — see the log for which app and resolver."/>
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
                         </Border>
 
                         <!-- ── History (per configuration, all sessions) ── -->
                         <Border Style="{StaticResource CardStyle}">
                             <StackPanel>
-                                <TextBlock Style="{StaticResource SectionTitle}"
-                                           Text="History — per configuration"/>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Style="{StaticResource SectionTitle}"
+                                               Margin="0,0,12,0" VerticalAlignment="Center"
+                                               Text="History — per configuration"/>
+                                    <!-- Reset clears the persisted history AND restarts
+                                         the running session's counters from zero, so the
+                                         numbers you see afterwards are only traffic moved
+                                         after the reset. Destructive, hence the confirm. -->
+                                    <Button x:Name="ResetUsageButton" Grid.Column="1"
+                                            Content="Reset Usage" VerticalAlignment="Center"
+                                            MinHeight="26" Padding="12,3"
+                                            ToolTip="Delete all recorded traffic history and restart the current session's counters from zero — cannot be undone"
+                                            Click="OnResetUsageClicked"/>
+                                </Grid>
                                 <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,10"
                                            Text="Cumulative traffic per proxy configuration across all sessions (merged live with the running session). Counters are keyed by the configuration's name."/>
                                 <Grid>
@@ -759,9 +807,10 @@
                                 <TextBlock Style="{StaticResource SectionTitle}"
                                            Text="DNS"/>
                                 <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,10"
-                                           Text="Stops your apps' DNS queries from leaking out direct while the proxy runs."/>
+                                           Text="Relays all plaintext DNS through the proxy so your ISP's resolver stays out of the path."/>
                                 <CheckBox x:Name="DnsRelayCheck" HorizontalAlignment="Left" Margin="0,0,0,8"
-                                          Content="Relay DNS through the proxy (all apps — closes the DNS leak)"
+                                          Content="Relay plaintext DNS through the proxy (all apps, system-wide)"
+                                          ToolTip="Intercepts all plaintext DNS — UDP 53 over IPv4 and IPv6, plus TCP 53 — and relays it through the active proxy, system-wide. Queries that cannot be relayed are dropped rather than sent directly. Encrypted DNS (DoH/DoT/DoQ) is outside scope."
                                           Checked="OnDnsPrefChanged" Unchecked="OnDnsPrefChanged"/>
                                 <StackPanel Orientation="Horizontal" Margin="16,0,0,8">
                                     <TextBlock Text="Relayed queries go to:"
@@ -776,13 +825,24 @@
                                         <ComboBoxItem Content="Transparent (each app's own DNS server)"/>
                                     </ComboBox>
                                 </StackPanel>
-                                <CheckBox x:Name="StunRelayCheck" HorizontalAlignment="Left" Margin="16,0,0,8"
-                                          Content="Also relay STUN traffic (WebRTC shows the proxy's IP)"
+                                <!-- WebRTC protection: two genuinely different options, presented as
+                                     two checkboxes rather than a hidden tri-state,
+                                     because the trade-off differs and users need to
+                                     see it. Blocking WINS if both are ticked. -->
+                                <CheckBox x:Name="BlockWebRtcCheck" HorizontalAlignment="Left" Margin="16,0,0,8"
+                                          Content="Block WebRTC / STUN (recommended — but video calls stop working)"
+                                          ToolTip="Drops outbound STUN/ICE over IPv4 AND IPv6 so WebRTC cannot discover your public address. STUN is recognised by its message content (the standard STUN magic cookie), NOT by port — so it does not matter which port the WebRTC server uses. This is the reliable option: unlike relaying it needs no UDP support from your proxy, and it cannot fail open. The cost is real — browser video calls (Meet, Zoom in-browser, Discord calls) will NOT connect, because with no reachable STUN server WebRTC has no server-reflexive candidate. Overrides STUN relaying if both are on. Watch the dropped counter on the Data Usage tab: a count of zero means nothing was matched."
                                           Checked="OnDnsPrefChanged" Unchecked="OnDnsPrefChanged"/>
+                                <CheckBox x:Name="StunRelayCheck" HorizontalAlignment="Left" Margin="16,0,0,8"
+                                          Content="Instead, relay STUN through the proxy (keeps video calls, less reliable)"
+                                          ToolTip="Relays STUN through the proxy so WebRTC reports the proxy's address and video calls keep working. Unlike blocking, relaying matches by PORT (3478/3479, 5348/5349, 19302-19309) and also depends on your proxy supporting SOCKS5 UDP ASSOCIATE — a WebRTC server on any other port still leaks, and a failed relay makes WebRTC fall back to a direct candidate. If the Data Usage tab shows 0 captured or any failures, use 'Block WebRTC' instead. Works whether or not the DNS relay above is on."
+                                          Checked="OnDnsPrefChanged" Unchecked="OnDnsPrefChanged"/>
+                                <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="32,0,0,8"
+                                           Text="WebRTC can reveal your public IP through STUN. Blocking is the reliable fix — it matches STUN on any port — but stops in-browser video calls. Relaying keeps them working but depends on your proxy's UDP support and on the STUN port being a common one. Neither covers TURN over TCP/TLS, so treat this as strong rather than absolute protection."/>
                                 <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap"
-                                           Text="Intercepts ALL outbound DNS (UDP 53, IPv4) system-wide and relays it through the active proxy (SOCKS5 UDP ASSOCIATE) — Windows sends app DNS from its DNS cache service (svchost), so this cannot be limited to selected apps. Applies at the next START. If your proxy does not support UDP, system DNS will fail while this is on — disable it or enable UDP in your proxy."/>
+                                           Text="Intercepts ALL plaintext DNS system-wide and relays it through the active proxy: UDP 53 over IPv4 and IPv6 (SOCKS5 UDP ASSOCIATE) plus TCP 53 (the fallback transport for truncated answers). Windows sends app DNS from its DNS cache service (svchost), so this cannot be limited to selected apps. Unparsable queries are dropped fail-closed, and the Windows DNS cache is flushed at START and STOP. Applies at the next START. If your proxy does not support UDP, system DNS will fail while this is on — disable it or enable UDP in your proxy."/>
                                 <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,6,0,0"
-                                           Text="Still NOT covered: browsers/apps with their own secure DNS (DoH/DoT) and DNS over IPv6 transport."/>
+                                           Text="Not relayed: encrypted DNS (DoH/DoT/DoQ) and custom resolvers on non-standard ports. DoH on TCP/443 is not relayed, but it is watched — a passive observer reads the TLS ClientHello and names the app and resolver using it, so you can see exactly which application bypasses the relay. DoH over QUIC/HTTP3 and Encrypted ClientHello are not observable."/>
                             </StackPanel>
                         </Border>
 
@@ -975,6 +1035,16 @@
                                         shows current-session upload / download / total speeds plus session totals (tracking starts at START).
                                         <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">History</Run>
                                         shows cumulative traffic per proxy configuration across all sessions, merged live with the running session.
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Reset Usage</Run>
+                                        deletes the recorded history and restarts the counters from zero — including the running session's, without interrupting routing.
+                                        The same tab carries a
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">DNS relay</Run>
+                                        block: how many plaintext queries were captured and relayed, and what the
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">encrypted-DNS observer</Run>
+                                        saw. When an app resolves through DoH, it names the process and the resolver —
+                                        that is how you find out
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">which</Run>
+                                        application is bypassing the relay, instead of guessing from a leak test's resolver list.
                                     </TextBlock>
                                 </Expander>
 
@@ -983,13 +1053,18 @@
                                     <StackPanel Margin="16,6,0,0">
                                         <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,6" FontWeight="Normal">
                                             <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">DNS:</Run>
-                                            relay supported DNS (UDP 53, IPv4)
+                                            relay supported DNS
                                             <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">system-wide</Run>
-                                            through the proxy via
-                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">SOCKS5 UDP ASSOCIATE</Run>
-                                            — cannot be limited to selected apps. Pick the resolver relayed queries go to, optionally relay STUN for WebRTC.
+                                            through the proxy —
+                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">UDP 53 over IPv4 and IPv6</Run>
+                                            (SOCKS5 UDP ASSOCIATE) plus
+                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">TCP 53</Run>
+                                            for truncated answers, on both address families. Pick the resolver relayed queries go to.
+                                            <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">WebRTC:</Run>
+                                            STUN can be blocked (reliable, but in-browser video calls stop working) or relayed through the proxy (keeps calls, needs proxy UDP support) — both work with the DNS relay above off.
+                                            Unparsable queries are dropped fail-closed and the Windows DNS cache is flushed at START/STOP.
                                             Applies at <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">next START</Run>;
-                                            disable if your proxy lacks UDP support. Not covered: DoH/DoT, custom resolvers, IPv6 DNS.
+                                            disable if your proxy lacks UDP support. Encrypted DNS (DoH/DoT/DoQ) and custom resolvers on non-standard ports are not relayed — DoH on TCP/443 is watched and named, not blocked.
                                         </TextBlock>
                                         <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,0,0,6" FontWeight="Normal">
                                             <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Appearance:</Run>
@@ -1033,8 +1108,9 @@
                                           FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">
                                     <TextBlock Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="16,6,0,0" FontWeight="Normal">
                                         <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">Windows 10/11 x64, administrator rights</Run>
-                                        (WinDivert needs them). Beta: partial IPv6 / QUIC / UDP coverage, no DoH/DoT handling, no guaranteed leak-proof DNS.
-                                        Antivirus/firewalls may interfere with traffic interception. Test what matters to you before relying on it.
+                                        (WinDivert needs them). Beta: partial QUIC/UDP coverage. Plaintext DNS (UDP/TCP 53, IPv4+IPv6) is relayed system-wide and fails closed, but
+                                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}">encrypted DNS (DoH/DoT/DoQ) cannot be intercepted</Run>
+                                        without TLS interception. Antivirus/firewalls may interfere with traffic interception. Test what matters to you before relying on it.
                                     </TextBlock>
                                 </Expander>
                             </StackPanel>

@@ -46,8 +46,9 @@ public sealed class ApplicationSettings
     public List<IpDomainRule> IpDomainRules { get; set; } = new();
 
     /// <summary>
-    /// DNS behavior (Phase 8): whether DNS queries of proxy-selected processes
-    /// are relayed through the active proxy (closing the DNS leak).
+    /// DNS behavior: whether all plaintext DNS (UDP/TCP 53, IPv4 and IPv6) is
+    /// relayed system-wide through the active proxy, failing closed rather than
+    /// falling back to a direct query. See <see cref="DnsSettings"/>.
     /// </summary>
     public DnsSettings Dns { get; set; } = new();
 

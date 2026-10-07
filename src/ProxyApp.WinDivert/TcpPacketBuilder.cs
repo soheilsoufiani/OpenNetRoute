@@ -62,17 +62,18 @@ internal static class TcpPacketBuilder
         if (useMss && !withWindowScale) optLen += 4; // pad the lone MSS block to 8 bytes
 
         var tcpLen = 20 + optLen;
-        var packet = new byte[20 + tcpLen];
-        WriteIpHeader(packet, packet.Length, serverIp, clientIp);
+        var ipLen = IpHeaderLengthFor(serverIp);
+        var packet = new byte[ipLen + tcpLen];
+        ipLen = WriteIpHeader(packet, packet.Length, serverIp, clientIp);
 
         // Advertise a reasonable window (0x7210 = 29200, matching E6). A window
         // of 0 would cause the client to send 1-byte window probes instead of
         // the full HTTP request, starving the relay. When scaling is negotiated
         // this field is interpreted by the client as 0x7210 << 8.
-        WriteTcpHeader(packet, 20, serverPort, clientPort, serverIsn, clientIsn + 1, 0x12, 0x7210);
-        packet[20 + 12] = (byte)((tcpLen / 4) << 4); // data offset now covers options
+        WriteTcpHeader(packet, ipLen, serverPort, clientPort, serverIsn, clientIsn + 1, 0x12, 0x7210);
+        packet[ipLen + 12] = (byte)((tcpLen / 4) << 4); // data offset now covers options
 
-        var o = 20 + 20;
+        var o = ipLen + 20;
         if (useMss)
         {
             packet[o] = 2; packet[o + 1] = 4;
@@ -114,9 +115,10 @@ internal static class TcpPacketBuilder
         ushort window = 0x7210,
         bool setFin = false)
     {
-        int ipLen = 20, tcpLen = 20;
+        const int tcpLen = 20;
+        var ipLen = IpHeaderLengthFor(serverIp);
         var packet = new byte[ipLen + tcpLen + payload.Length];
-        WriteIpHeader(packet, packet.Length, serverIp, clientIp);
+        ipLen = WriteIpHeader(packet, packet.Length, serverIp, clientIp);
         var flags = setFin ? (byte)0x19 : (byte)0x18; // FIN|PSH|ACK vs PSH|ACK
         WriteTcpHeader(packet, ipLen, serverPort, clientPort, seq, ack, flags, window);
         payload.CopyTo(packet.AsSpan(ipLen + tcpLen));
@@ -139,9 +141,10 @@ internal static class TcpPacketBuilder
         uint ack,
         ushort window = 0x7210)
     {
-        var packet = new byte[40];
-        WriteIpHeader(packet, packet.Length, serverIp, clientIp);
-        WriteTcpHeader(packet, 20, serverPort, clientPort, seq, ack, 0x10, window);
+        var ipLen = IpHeaderLengthFor(serverIp);
+        var packet = new byte[ipLen + 20];
+        ipLen = WriteIpHeader(packet, packet.Length, serverIp, clientIp);
+        WriteTcpHeader(packet, ipLen, serverPort, clientPort, seq, ack, 0x10, window);
         return packet;
     }
 
@@ -158,10 +161,11 @@ internal static class TcpPacketBuilder
         uint ack,
         ushort window = 0x7210)
     {
-        var packet = new byte[40];
-        WriteIpHeader(packet, packet.Length, serverIp, clientIp);
+        var ipLen = IpHeaderLengthFor(serverIp);
+        var packet = new byte[ipLen + 20];
+        ipLen = WriteIpHeader(packet, packet.Length, serverIp, clientIp);
         // FIN|ACK (0x11).
-        WriteTcpHeader(packet, 20, serverPort, clientPort, seq, ack, 0x11, window);
+        WriteTcpHeader(packet, ipLen, serverPort, clientPort, seq, ack, 0x11, window);
         return packet;
     }
 
@@ -177,15 +181,53 @@ internal static class TcpPacketBuilder
         uint seq,
         uint ack)
     {
-        var packet = new byte[40];
-        WriteIpHeader(packet, packet.Length, serverIp, clientIp);
-        WriteTcpHeader(packet, 20, serverPort, clientPort, seq, ack, 0x04, 0);
+        var ipLen = IpHeaderLengthFor(serverIp);
+        var packet = new byte[ipLen + 20];
+        ipLen = WriteIpHeader(packet, packet.Length, serverIp, clientIp);
+        WriteTcpHeader(packet, ipLen, serverPort, clientPort, seq, ack, 0x04, 0);
         return packet;
     }
 
-    /// <summary>Writes a minimal IPv4 header (no options), checksum computed later.</summary>
-    private static void WriteIpHeader(byte[] packet, int totalLen, IPAddress src, IPAddress dst)
+    /// <summary>Fixed IPv6 header length (no extension headers are emitted).</summary>
+    internal const int Ipv6HeaderLength = 40;
+
+    /// <summary>
+    /// The IP header length for an address: 40 for IPv6, 20 for IPv4. The family
+    /// is taken from the ADDRESS, not a parameter, so every caller gets the
+    /// offset that matches the tuple it is building for.
+    /// </summary>
+    private static int IpHeaderLengthFor(IPAddress address) =>
+        address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
+            ? Ipv6HeaderLength
+            : 20;
+
+    /// <summary>
+    /// Writes a minimal IPv4 or IPv6 header (no options) and RETURNS its length,
+    /// which is the offset every TCP header/payload write must use. The family
+    /// follows the addresses. Checksums are computed later by
+    /// <c>WinDivertHelperCalcChecksums</c>.
+    /// </summary>
+    private static int WriteIpHeader(byte[] packet, int totalLen, IPAddress src, IPAddress dst)
     {
+        var s = src.GetAddressBytes();
+        var d = dst.GetAddressBytes();
+
+        if (src.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+        {
+            packet[0] = 0x60;                       // version 6, traffic class 0, flow label 0
+            packet[1] = 0x00;
+            packet[2] = 0x00;
+            packet[3] = 0x00;
+            var payloadLen = totalLen - Ipv6HeaderLength;
+            packet[4] = (byte)(payloadLen >> 8);
+            packet[5] = (byte)payloadLen;          // payload length
+            packet[6] = 6;                          // Next Header: TCP
+            packet[7] = 64;                         // Hop Limit
+            System.Buffer.BlockCopy(s, 0, packet, 8, 16);
+            System.Buffer.BlockCopy(d, 0, packet, 24, 16);
+            return Ipv6HeaderLength;
+        }
+
         packet[0] = 0x45; // IPv4, IHL 5
         packet[1] = 0x00; // DSCP/ECN
         packet[2] = (byte)(totalLen >> 8);
@@ -196,10 +238,9 @@ internal static class TcpPacketBuilder
         packet[7] = 0x00;
         packet[8] = 64; // TTL
         packet[9] = 6;  // TCP
-        var s = src.GetAddressBytes();
-        var d = dst.GetAddressBytes();
         System.Buffer.BlockCopy(s, 0, packet, 12, 4);
         System.Buffer.BlockCopy(d, 0, packet, 16, 4);
+        return 20;
     }
 
     /// <summary>Writes a minimal TCP header (no options).</summary>

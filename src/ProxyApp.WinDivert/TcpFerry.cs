@@ -70,7 +70,19 @@ internal sealed class TcpFerry : IDisposable
     {
         if (!_gameMode || packet.Length < 2)
             return;
-        packet[1] = (byte)((packet[1] & 0x03) | 0xB8); // DSCP 46 (EF) << 2
+        const byte dscpEf = 46 << 2; // 0xB8
+        if ((packet[0] >> 4) == 6)
+        {
+            // IPv6: the traffic class SPANS the low nibble of byte 0 and the
+            // high nibble of byte 1 — writing only byte 1 (the IPv4 position)
+            // would put DSCP 46 into the flow label instead.
+            packet[0] = (byte)((packet[0] & 0xF0) | (dscpEf >> 4));
+            packet[1] = (byte)((packet[1] & 0x0F) | (dscpEf << 4));
+        }
+        else
+        {
+            packet[1] = (byte)((packet[1] & 0x03) | dscpEf);
+        }
     }
 
     // ── Per-configuration usage accounting (Data Usage tab) ──
@@ -144,6 +156,13 @@ internal sealed class TcpFerry : IDisposable
     internal static readonly TimeSpan DefaultIdleTimeout = TimeSpan.FromMinutes(2);
 
     private readonly string _captureFilter;
+
+    /// <summary>
+    /// Optional IPv6 capture filter. When set (the DNS-over-TCP leg), a second
+    /// handle is opened with it; when null, no IPv6 handle is opened at all.
+    /// </summary>
+    private readonly string? _captureFilterV6;
+
     private readonly TimeSpan _idleTimeout;
     private readonly IConnectionProcessResolver _processResolver;
     private readonly IReadOnlyList<ApplicationRule> _rules;
@@ -163,15 +182,48 @@ internal sealed class TcpFerry : IDisposable
     private readonly Action<string>? _flowClosed; // per-connection summary sink
     private readonly string _activeProxyName;
 
+    // ── Forced-proxy destination ports (the DNS-over-TCP leg) ──
+    // When the DNS relay is on, plaintext DNS over TCP (port 53) must be
+    // relayed system-wide, like UDP 53: Windows falls back to TCP/53 for
+    // truncated answers and some resolvers are TCP-only. A connection to a
+    // listed port is routed through the ACTIVE proxy regardless of the app
+    // rules — the same reason UDP 53 is intercepted system-wide (system DNS
+    // comes from svchost/dnscache, so a per-app gate would never match).
+    // Empty = feature off. Never leaks: if the proxy is unreachable the
+    // connection simply fails instead of falling back to the direct path.
+    private readonly IReadOnlySet<ushort> _forcedProxyPorts;
+
     // ── Per-configuration usage accounting (Data Usage tab) ──
     // Byte buckets keyed by the proxy profile each flow was dialed through:
     // a pinned rule under the pinned name, everything else under the ACTIVE
     // profile's name. Updated at the same Interlocked sites as the session
     // totals — both are live.
     private readonly ConcurrentDictionary<string, ProfileUsage> _bytesByProfile = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// The IPv4 capture handle. Also the fallback injection handle for flows
+    /// whose own handle is zero.
+    /// </summary>
     private IntPtr _captureHandle = IntPtr.Zero;
+
+    /// <summary>
+    /// IPv6 capture handle (IntPtr.Zero when IPv6 capture is not enabled).
+    ///
+    /// Why a SECOND handle rather than one combined filter: a WinDivert filter
+    /// expression cannot mix <c>ip</c> and <c>ipv6</c>, so IPv6 traffic needs
+    /// its own handle (same reason <see cref="UdpDnsFerry"/> has two). It is
+    /// opened ONLY for the DNS-over-TCP leg — the app's general TCP ferry stays
+    /// IPv4-only, and enabling v6 capture for everything would silently change
+    /// routing for every selected app.
+    ///
+    /// Flows captured here carry the handle in <see cref="FlowState.SendHandle"/>
+    /// and are injected through it, because a handle only admits packets its own
+    /// layer/filter accepts.
+    /// </summary>
+    private IntPtr _captureHandleV6 = IntPtr.Zero;
+
     private CancellationTokenSource? _cts;
     private Task? _captureLoop;
+    private Task? _captureLoopV6;
     private readonly FlowTable _flowTable = new();
     private volatile bool _isRunning;
 
@@ -251,6 +303,16 @@ internal sealed class TcpFerry : IDisposable
     /// </param>
     /// <param name="trace">Optional diagnostic trace sink.</param>
     /// <param name="flowClosed">Optional per-connection close summary sink.</param>
+    /// <param name="forcedProxyPorts">
+    /// Destination ports routed through the ACTIVE proxy regardless of the app
+    /// rules (the DNS-over-TCP leg: {53} when the DNS relay is on). Empty/off
+    /// = rules decide, as before.
+    /// </param>
+    /// <param name="captureFilterV6">
+    /// Optional IPv6 capture filter opened as a SECOND handle. Used for the
+    /// DNS-over-TCP-over-IPv6 leg only (a filter expression cannot mix
+    /// <c>ip</c> and <c>ipv6</c>). Null = no IPv6 capture, as before.
+    /// </param>
     public TcpFerry(
         ISocks5Client socks5Client,
         IConnectionProcessResolver? processResolver = null,
@@ -264,7 +326,9 @@ internal sealed class TcpFerry : IDisposable
         IReadOnlyList<IpDomainRule>? destinationRules = null,
         IDestinationResolver? destinationResolver = null,
         bool gameMode = false,
-        string? activeProxyName = null)
+        string? activeProxyName = null,
+        IReadOnlySet<ushort>? forcedProxyPorts = null,
+        string? captureFilterV6 = null)
     {
         _socks5Client = socks5Client ?? throw new ArgumentNullException(nameof(socks5Client));
         _processResolver = processResolver ?? new DefaultPassThroughResolver();
@@ -280,9 +344,11 @@ internal sealed class TcpFerry : IDisposable
             .GroupBy(p => p.Name!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         _captureFilter = captureFilter ?? "outbound and ip and tcp and not loopback";
+        _captureFilterV6 = captureFilterV6;
         _idleTimeout = idleTimeout ?? DefaultIdleTimeout;
         _trace = trace;
         _flowClosed = flowClosed;
+        _forcedProxyPorts = forcedProxyPorts ?? new HashSet<ushort>();
 
         // The SYN-ACK is injected IMMEDIATELY on SYN capture; the SOCKS5 CONNECT
         // runs in parallel. The old serial hold (600ms → 100ms) added the full
@@ -328,8 +394,34 @@ internal sealed class TcpFerry : IDisposable
         WinDivertNative.WinDivertSetParam(_captureHandle, WinDivertNative.Params.QueueTime, 2000);
         WinDivertNative.WinDivertSetParam(_captureHandle, WinDivertNative.Params.QueueSize, 33554432);
 
+        // ── IPv6 handle for the DNS-over-TCP leg. Failing to open it is NOT
+        //    fatal: a v4-only system legitimately has no v6 stack, and the
+        //    IPv4 legs already cover the common case. It is always traced, and
+        //    traced as a LEAK RISK — DNS over TCP+IPv6 would go direct. ──
+        if (!string.IsNullOrWhiteSpace(_captureFilterV6))
+        {
+            _captureHandleV6 = WinDivertNative.WinDivertOpen(
+                _captureFilterV6, WinDivertLayer.Network, 0, 0);
+            if (_captureHandleV6 == IntPtr.Zero || _captureHandleV6 == new IntPtr(-1))
+            {
+                var v6err = Marshal.GetLastWin32Error();
+                _captureHandleV6 = IntPtr.Zero;
+                Trace($"IPv6 capture unavailable (WinDivertOpen error {v6err}) — " +
+                      "DNS over TCP+IPv6 CANNOT be relayed and may leak directly.");
+            }
+            else
+            {
+                WinDivertNative.WinDivertSetParam(_captureHandleV6, WinDivertNative.Params.QueueLength, 4096);
+                WinDivertNative.WinDivertSetParam(_captureHandleV6, WinDivertNative.Params.QueueTime, 2000);
+                WinDivertNative.WinDivertSetParam(_captureHandleV6, WinDivertNative.Params.QueueSize, 8388608);
+                Trace("IPv6 capture handle open — DNS over TCP+IPv6 is relayed too.");
+            }
+        }
+
         _isRunning = true;
-        _captureLoop = Task.Run(() => CaptureLoopAsync(ct), ct);
+        _captureLoop = Task.Run(() => CaptureLoopAsync(_captureHandle, ct), ct);
+        if (_captureHandleV6 != IntPtr.Zero)
+            _captureLoopV6 = Task.Run(() => CaptureLoopAsync(_captureHandleV6, ct), ct);
         StartHealthTicker(ct);
     }
 
@@ -428,16 +520,26 @@ internal sealed class TcpFerry : IDisposable
         _isRunning = false;
         _cts?.Cancel();
 
-        // Close the handle to unblock any pending WinDivertRecv.
+        // Close BOTH handles to unblock any pending WinDivertRecv.
         if (_captureHandle != IntPtr.Zero)
         {
             WinDivertNative.WinDivertClose(_captureHandle);
             _captureHandle = IntPtr.Zero;
         }
+        if (_captureHandleV6 != IntPtr.Zero)
+        {
+            WinDivertNative.WinDivertClose(_captureHandleV6);
+            _captureHandleV6 = IntPtr.Zero;
+        }
 
         if (_captureLoop != null)
         {
             try { await _captureLoop; }
+            catch (OperationCanceledException) { }
+        }
+        if (_captureLoopV6 != null)
+        {
+            try { await _captureLoopV6; }
             catch (OperationCanceledException) { }
         }
 
@@ -471,7 +573,7 @@ internal sealed class TcpFerry : IDisposable
     ///     take seconds); duplicate SYNs see the flow already in the table and
     ///     pass through.
     /// </summary>
-    private async Task CaptureLoopAsync(CancellationToken ct)
+    private async Task CaptureLoopAsync(IntPtr handle, CancellationToken ct)
     {
         var buffer = new byte[65535];
         var addr = new WinDivertAddress();
@@ -482,7 +584,7 @@ internal sealed class TcpFerry : IDisposable
             {
                 uint readLen = 0;
                 if (!WinDivertNative.WinDivertRecv(
-                        _captureHandle, buffer, (uint)buffer.Length,
+                        handle, buffer, (uint)buffer.Length,
                         ref readLen, ref addr))
                 {
                     if (ct.IsCancellationRequested || !_isRunning)
@@ -511,9 +613,12 @@ internal sealed class TcpFerry : IDisposable
                 // New connection: only handle pure SYNs.
                 if (!tuple.IsPureSyn)
                 {
-                    // Not a SYN we want to intercept — pass through.
+                    // Not a SYN we want to intercept — pass through. Injection
+                    // MUST use THIS loop's handle: a handle only admits packets
+                    // its own filter/layer accepts, so sending an IPv6 packet
+                    // through the IPv4 handle fails.
                     WinDivertNative.WinDivertSend(
-                        _captureHandle, buffer, readLen, IntPtr.Zero, ref addr);
+                        handle, buffer, readLen, IntPtr.Zero, ref addr);
                     continue;
                 }
 
@@ -526,7 +631,7 @@ internal sealed class TcpFerry : IDisposable
                 //    exceptions so a handler failure cannot surface as an
                 //    unobserved task exception. ──
                 var synBuffer = buffer.ToArray();
-                _ = Task.Run(() => HandleNewSynAsync(synBuffer, readLen, tuple, addr, ct), ct)
+                _ = Task.Run(() => HandleNewSynAsync(synBuffer, readLen, tuple, addr, handle, ct), ct)
                     .ContinueWith(t =>
                     {
                         if (t.IsFaulted && _isRunning)
@@ -556,7 +661,7 @@ internal sealed class TcpFerry : IDisposable
     /// </summary>
     private async Task HandleNewSynAsync(
         byte[] buffer, uint readLen, TcpTuple tuple, WinDivertAddress addr,
-        CancellationToken ct)
+        IntPtr handle, CancellationToken ct)
     {
         var flowKey = FlowTable.KeyFrom(tuple.SrcIp, tuple.SrcPort, tuple.DstIp, tuple.DstPort);
 
@@ -575,16 +680,29 @@ var decision = await RuleEngine.DecideAsync(
     _destinationRules, _rules, processName, processInfo?.ExecutablePath,
     tuple.DstIp, tuple.DstPort, _destinationResolver, ct);
 
+        // ── Forced-proxy port override (plaintext DNS over TCP). The DNS
+        //    relay's UDP leg cannot see TCP/53, which Windows uses for
+        //    truncated answers — without this those queries would go direct.
+        //    SYSTEM-WIDE and unconditional: neither "no rule matched" nor a
+        //    Direct rule may let plaintext DNS escape.
+        if (_forcedProxyPorts.Contains(tuple.DstPort) && decision.Mode != ProxyMode.Proxy)
+        {
+            Trace($"SYN -> forced Proxy: destination port {tuple.DstPort} is a system-wide relay port " +
+                  $"(overrides mode={decision.Mode} from the app rules).");
+            decision = new RoutingDecision(ProxyMode.Proxy, null);
+        }
+
         Trace($"SYN src={tuple.SrcIp}:{tuple.SrcPort} dst={tuple.DstIp}:{tuple.DstPort} " +
               $"pid={processInfo?.ProcessId} name={processName ?? "?"} mode={decision.Mode} " +
               $"proxy={(string.IsNullOrWhiteSpace(decision.ProxyName) ? "default" : decision.ProxyName)}");
 
         if (decision.Mode != ProxyMode.Proxy)
         {
-            // Direct, or no matching rule — reinject unchanged.
+            // Direct, or no matching rule — reinject unchanged through the
+            // handle this SYN arrived on.
             Trace($"SYN -> Direct (pass-through)");
             WinDivertNative.WinDivertSend(
-                _captureHandle, buffer, readLen, IntPtr.Zero, ref addr);
+                handle, buffer, readLen, IntPtr.Zero, ref addr);
             return;
         }
 
@@ -609,7 +727,10 @@ var decision = await RuleEngine.DecideAsync(
             : _advertisedMssCap;
 
         var flow = new FlowState(
-            flowKey, tuple.Seq, DefaultServerIsn, addr)
+            flowKey, tuple.Seq, DefaultServerIsn, addr,
+            // Remember WHICH handle captured this SYN — every injection toward
+            // this flow (SYN-ACK, data, ACK, FIN, RST) must go through it.
+            sendHandle: handle)
         {
             ProcessName = processName,
             ProcessId = processInfo?.ProcessId ?? 0,
@@ -629,7 +750,7 @@ var decision = await RuleEngine.DecideAsync(
             // A concurrent handler already created this flow (duplicate SYN).
             Trace("SYN -> duplicate (flow already being created); pass-through");
             WinDivertNative.WinDivertSend(
-                _captureHandle, buffer, readLen, IntPtr.Zero, ref addr);
+                handle, buffer, readLen, IntPtr.Zero, ref addr);
             return;
         }
 
@@ -659,7 +780,7 @@ var decision = await RuleEngine.DecideAsync(
         WinDivertNative.WinDivertHelperCalcChecksums(synAck, (uint)synAck.Length, ref synAddr, 0);
 
         if (!WinDivertNative.WinDivertSend(
-                _captureHandle, synAck, (uint)synAck.Length, IntPtr.Zero, ref synAddr))
+                handle, synAck, (uint)synAck.Length, IntPtr.Zero, ref synAddr))
         {
             // Injection failed; remove the flow.
             InjectRstToClient(tuple, flow);
@@ -965,7 +1086,7 @@ var decision = await RuleEngine.DecideAsync(
                     }
 
                     if (!WinDivertNative.WinDivertSend(
-                            _captureHandle, packet, (uint)packet.Length, IntPtr.Zero, ref addr))
+                            flow.ResolveSendHandle(_captureHandle), packet, (uint)packet.Length, IntPtr.Zero, ref addr))
                     {
                         Interlocked.Increment(ref _windivertErrors);
                         Trace($"WinDivertSend FAILED err={Marshal.GetLastWin32Error()}");
@@ -1112,7 +1233,7 @@ var decision = await RuleEngine.DecideAsync(
         WinDivertNative.WinDivertHelperCalcChecksums(fin, (uint)fin.Length, ref addr, 0);
         Trace($"Injecting FIN|ACK to client (seq={finSeq}, ack={flow.NextClientAck})");
         if (!WinDivertNative.WinDivertSend(
-                _captureHandle, fin, (uint)fin.Length, IntPtr.Zero, ref addr))
+                flow.ResolveSendHandle(_captureHandle), fin, (uint)fin.Length, IntPtr.Zero, ref addr))
         {
             // Observed during development: close-packet injection can fail with
             // error 6 after the client has sent its own FIN. The failure is
@@ -1209,7 +1330,8 @@ var decision = await RuleEngine.DecideAsync(
         addr.LayerEventFlags &= ~(1uL << 17); // inbound
         ApplyGameModeDscp(rst);
         WinDivertNative.WinDivertHelperCalcChecksums(rst, (uint)rst.Length, ref addr, 0);
-        if (WinDivertNative.WinDivertSend(_captureHandle, rst, (uint)rst.Length, IntPtr.Zero, ref addr))
+        if (WinDivertNative.WinDivertSend(
+                flow.ResolveSendHandle(_captureHandle), rst, (uint)rst.Length, IntPtr.Zero, ref addr))
             Interlocked.Increment(ref _rstsInjected);
         else
             Interlocked.Increment(ref _windivertErrors);
@@ -1360,7 +1482,7 @@ var decision = await RuleEngine.DecideAsync(
                 return;
             }
 
-            var tcpOffset = (buffer[0] & 0x0F) * 4;
+            var tcpOffset = TcpPacketParser.IpHeaderLength(buffer, readLen);
             var payload = buffer.AsSpan(
                 tcpOffset + tuple.TcpHeaderLen + plan.SkipBytes, newLen);
 
@@ -1394,7 +1516,7 @@ var decision = await RuleEngine.DecideAsync(
             return;
         }
 
-        var tcpOffset2 = (buffer[0] & 0x0F) * 4;
+        var tcpOffset2 = TcpPacketParser.IpHeaderLength(buffer, readLen);
 
         // ── Exactly-once sequencing: only bytes at/after NextClientAck are
         //    relayed. Retransmissions, keepalive and persist probes (which
@@ -1483,7 +1605,7 @@ var decision = await RuleEngine.DecideAsync(
         ApplyGameModeDscp(ack);
         WinDivertNative.WinDivertHelperCalcChecksums(ack, (uint)ack.Length, ref addr, 0);
         if (!WinDivertNative.WinDivertSend(
-                _captureHandle, ack, (uint)ack.Length, IntPtr.Zero, ref addr))
+                flow.ResolveSendHandle(_captureHandle), ack, (uint)ack.Length, IntPtr.Zero, ref addr))
         {
             Interlocked.Increment(ref _windivertErrors);
             Trace($"ACK WinDivertSend FAILED err={Marshal.GetLastWin32Error()}");

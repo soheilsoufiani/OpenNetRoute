@@ -33,6 +33,17 @@ public static class UdpProcessTable
     }
 #pragma warning restore CS0649
 
+#pragma warning disable CS0649
+    private struct MibUdp6RowOwnerPid
+    {
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+        public byte[] LocalAddr;
+        public uint LocalScopeId;
+        public int LocalPort;
+        public int OwningPid;
+    }
+#pragma warning restore CS0649
+
     [DllImport("iphlpapi.dll", SetLastError = true)]
     private static extern int GetExtendedUdpTable(
         IntPtr pUdpTable, ref int dwSize, bool bOrder,
@@ -91,6 +102,62 @@ public static class UdpProcessTable
         {
             // Attribution is best-effort: a failed lookup must never take down
             // the caller. Null = "cannot attribute".
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Resolves the owning PID of the IPv6 UDP socket bound to
+    /// <paramref name="localIp"/>:<paramref name="localPort"/> (IPv6 table,
+    /// AF_INET6). Returns null when no row matches. Never throws.
+    /// Diagnostic-only, like the IPv4 lookup.
+    /// </summary>
+    public static int? ResolveOwnerPidV6(IPAddress localIp, ushort localPort)
+    {
+        const int AfInet6 = 23;
+        try
+        {
+            int size = 0;
+            _ = GetExtendedUdpTable(IntPtr.Zero, ref size, false, AfInet6, UdpTableClass.OwnerPid, 0);
+            if (size <= 0)
+                return null;
+
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                if (GetExtendedUdpTable(buffer, ref size, false, AfInet6, UdpTableClass.OwnerPid, 0) != 0)
+                    return null;
+
+                var count = Marshal.ReadInt32(buffer);
+                var rowSize = Marshal.SizeOf<MibUdp6RowOwnerPid>();
+                var offset = Marshal.SizeOf<int>();
+                var localBytes = localIp.GetAddressBytes();
+
+                for (var i = 0; i < count; i++)
+                {
+                    var row = Marshal.PtrToStructure<MibUdp6RowOwnerPid>(buffer + offset + i * rowSize);
+                    var rowLocalPort = (ushort)IPAddress.NetworkToHostOrder((short)row.LocalPort);
+                    if (rowLocalPort != localPort)
+                        continue;
+
+                    var rowLocalIp = new IPAddress(row.LocalAddr, 0);
+                    // A socket bound to :: matches any local address.
+                    if (rowLocalIp.Equals(IPAddress.IPv6Any) ||
+                        rowLocalIp.GetAddressBytes().SequenceEqual(localBytes))
+                    {
+                        if (row.OwningPid > 0)
+                            return row.OwningPid;
+                    }
+                }
+                return null;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        catch (Exception)
+        {
             return null;
         }
     }

@@ -34,14 +34,46 @@ internal readonly record struct TcpTuple(
 }
 
 /// <summary>
-/// Minimal IPv4/TCP header parser. Read-only; it does not modify packets.
-/// Handles only unfragmented IPv4/TCP.
+/// Minimal IPv4/IPv6 + TCP header parser. Read-only; it does not modify packets.
+/// Handles only unfragmented IPv4/TCP and IPv6/TCP WITHOUT extension headers
+/// (a v6 packet whose Next Header is not TCP at offset 6 fails to parse).
+///
+/// IPv6 support exists for the DNS-over-TCP leg: Windows falls back to TCP when
+/// a UDP answer is truncated, and it may do so over IPv6 transport. Without it,
+/// DNS over TCP+IPv6 was relayed by nothing and left on the direct path.
 /// </summary>
 internal static class TcpPacketParser
 {
+    /// <summary>Fixed IPv6 header length (extension headers are not supported).</summary>
+    internal const int Ipv6HeaderLength = 40;
+
     /// <summary>
-    /// Parses a raw IPv4/TCP packet into a <see cref="TcpTuple"/>. Returns false
-    /// for non-IPv4, non-TCP, or malformed packets.
+    /// The IP header length of a captured packet: the fixed 40 bytes for IPv6,
+    /// the IHL-derived length for IPv4. Returns 0 for a packet too short to hold
+    /// a version nibble or for an unknown IP version.
+    ///
+    /// Centralized so every offset computation in the ferry is family-correct:
+    /// the old inline <c>(packet[0] &amp; 0x0F) * 4</c> yields 0 for IPv6 (the
+    /// low nibble is part of the traffic class / flow label), which silently
+    /// pointed the payload offset at the IP header.
+    /// </summary>
+    public static int IpHeaderLength(byte[] packet, uint length)
+    {
+        if (length < 1 || packet.Length < 1)
+            return 0;
+        return (packet[0] >> 4) switch
+        {
+            4 => (packet[0] & 0x0F) * 4,
+            6 => Ipv6HeaderLength,
+            _ => 0
+        };
+    }
+
+    /// <summary>
+    /// Parses a raw IPv4/TCP or IPv6/TCP packet into a <see cref="TcpTuple"/>.
+    /// Returns false for a non-IP, non-TCP, or malformed packet, and for an
+    /// IPv6 packet carrying extension headers (not supported — the caller
+    /// treats it as unparsable rather than misreading the payload).
     /// </summary>
     public static bool TryParse(byte[] packet, uint length, out TcpTuple tuple)
     {
@@ -49,20 +81,32 @@ internal static class TcpPacketParser
         if (length < 20 || packet.Length < 20)
             return false;
 
-        if ((packet[0] >> 4) != 4)
-            return false; // Not IPv4.
-
-        var ihl = (packet[0] & 0x0F) * 4;
-        if (ihl < 20 || length < ihl + 20)
+        var ipHeaderLength = IpHeaderLength(packet, length);
+        if (ipHeaderLength < 20 || length < ipHeaderLength + 20)
             return false;
 
-        if (packet[9] != 6)
-            return false; // Not TCP.
+        IPAddress srcIp, dstIp;
+        if (ipHeaderLength == Ipv6HeaderLength)
+        {
+            // IPv6: version must be 6 and Next Header (offset 6) must be TCP.
+            // Extension headers (43/44/60/…) are rejected rather than skipped —
+            // a wrong payload offset would corrupt the relay stream.
+            if ((packet[0] >> 4) != 6 || packet[6] != 6)
+                return false;
+            srcIp = new IPAddress(packet.AsSpan(8, 16));
+            dstIp = new IPAddress(packet.AsSpan(24, 16));
+        }
+        else
+        {
+            if ((packet[0] >> 4) != 4)
+                return false; // Not IPv4.
+            if (packet[9] != 6)
+                return false; // Not TCP.
+            srcIp = new IPAddress(packet.AsSpan(12, 4));
+            dstIp = new IPAddress(packet.AsSpan(16, 4));
+        }
 
-        var srcIp = new IPAddress(packet.AsSpan(12, 4));
-        var dstIp = new IPAddress(packet.AsSpan(16, 4));
-
-        var tcp = (int)ihl;
+        var tcp = ipHeaderLength;
         var srcPort = (ushort)((packet[tcp] << 8) | packet[tcp + 1]);
         var dstPort = (ushort)((packet[tcp + 2] << 8) | packet[tcp + 3]);
         var seq = ((uint)packet[tcp + 4] << 24) | ((uint)packet[tcp + 5] << 16) |
@@ -84,7 +128,7 @@ internal static class TcpPacketParser
     /// </summary>
     public static SynOptions ParseSynOptions(byte[] packet, uint length, in TcpTuple tuple)
     {
-        var ihl = (packet[0] & 0x0F) * 4;
+        var ihl = IpHeaderLength(packet, length);
         var optsStart = ihl + 20;
         var optsEnd = ihl + tuple.TcpHeaderLen;
         if (length < optsStart || optsEnd > packet.Length)
@@ -123,7 +167,7 @@ internal static class TcpPacketParser
     {
         if (length < 20)
             return 0;
-        var ihl = (packet[0] & 0x0F) * 4;
+        var ihl = IpHeaderLength(packet, length);
         var payload = (int)length - ihl - tuple.TcpHeaderLen;
         return payload < 0 ? 0 : payload;
     }

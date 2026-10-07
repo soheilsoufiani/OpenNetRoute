@@ -77,7 +77,7 @@ public class UdpDnsFerryFilterTests
     [Fact]
     public void Filter_WithoutStun_CoversOnlyUdp53()
     {
-        var filter = UdpDnsFerry.BuildFilter(relayStun: false);
+        var filter = UdpDnsFerry.BuildFilter(dnsEnabled: true, stunPortsEnabled: false);
 
         Assert.Contains("udp.DstPort == 53", filter);
         Assert.DoesNotContain("3478", filter);
@@ -87,7 +87,7 @@ public class UdpDnsFerryFilterTests
     [Fact]
     public void Filter_WithStun_CoversIcePorts()
     {
-        var filter = UdpDnsFerry.BuildFilter(relayStun: true);
+        var filter = UdpDnsFerry.BuildFilter(dnsEnabled: true, stunPortsEnabled: true);
 
         Assert.Contains("udp.DstPort == 53", filter);
         Assert.Contains("3478", filter);   // standard STUN

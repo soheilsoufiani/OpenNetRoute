@@ -123,16 +123,25 @@ public sealed class Socks5UdpAssociateClient : ISocks5UdpRelay, IDisposable
 
             // The relay endpoint. Proxies report BND.ADDR for THEIR side; when
             // they report 0.0.0.0 (a wildcard), the relay is reachable at the
-            // proxy's own address.
+            // proxy's own address. Prefer an IPv4 resolution (the common
+            // case), but accept IPv6-only proxies instead of throwing.
             var relayIp = IPAddress.Parse(bndAddress);
             if (relayIp.Equals(IPAddress.Any) || relayIp.Equals(IPAddress.IPv6Any))
-                relayIp = (await Dns.GetHostAddressesAsync(_proxy.Host, ct).ConfigureAwait(false))
-                    .First(a => a.AddressFamily == AddressFamily.InterNetwork);
+            {
+                var resolved = await Dns.GetHostAddressesAsync(_proxy.Host, ct).ConfigureAwait(false);
+                relayIp = resolved.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)
+                    ?? resolved.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetworkV6)
+                    ?? throw new Socks5Exception($"The proxy host '{_proxy.Host}' resolved to no usable address.");
+            }
             _relayEndPoint = new IPEndPoint(relayIp, bndPort);
 
-            // Local UDP socket the client relays through.
-            var udp = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            udp.Bind(new IPEndPoint(IPAddress.Any, 0));
+            // Local UDP socket the client relays through. Its family must
+            // match the relay endpoint's family — an IPv4 socket cannot send
+            // to an IPv6 relay (and vice versa).
+            var socketFamily = _relayEndPoint.AddressFamily;
+            var localAddr = socketFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any;
+            var udp = new Socket(socketFamily, SocketType.Dgram, ProtocolType.Udp);
+            udp.Bind(new IPEndPoint(localAddr, 0));
 
             _controlSocket = control;
             _controlStream = stream;
@@ -238,7 +247,8 @@ public sealed class Socks5UdpAssociateClient : ISocks5UdpRelay, IDisposable
     {
         var udp = _udpSocket!;
         var buffer = new byte[65535];
-        var remoteAny = new IPEndPoint(IPAddress.Any, 0);
+        var remoteAny = new IPEndPoint(
+            udp.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any, 0);
         while (!ct.IsCancellationRequested)
         {
             try

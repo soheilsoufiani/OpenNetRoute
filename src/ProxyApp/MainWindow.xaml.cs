@@ -650,12 +650,167 @@ public partial class MainWindow : Window
         _usageTimer.Start();
     }
 
+    /// <summary>
+    /// Clears the recorded traffic history and restarts the counters from zero.
+    ///
+    /// Two things must happen together, or the numbers would come back:
+    /// <list type="number">
+    /// <item>The persisted history is emptied and written out, so the rows are
+    /// gone for good (across restarts).</item>
+    /// <item>The engine's cumulative session snapshot becomes the new baseline
+    /// (<see cref="_usageResetBaseline"/>) and the flush baselines are rebased
+    /// onto it — otherwise the next periodic flush would merge the whole
+    /// already-counted session back into the freshly cleared history.</item>
+    /// </list>
+    /// The engine and its running flows are untouched: nothing is stopped and
+    /// no bytes already moved are re-transferred.
+    /// </summary>
+    private void OnResetUsageClicked(object sender, RoutedEventArgs e)
+    {
+        if (_usageHistory.Count == 0 && !_engine.IsRunning)
+        {
+            SetStatus("No usage recorded yet — nothing to reset.");
+            return;
+        }
+
+        var running = _engine.IsRunning;
+        var confirm = MessageBox.Show(
+            this,
+            running
+                ? "Delete all recorded traffic history?\n\nThe running session's counters restart from zero too, " +
+                  "so the numbers shown afterwards cover only traffic moved after this reset. Routing is not interrupted."
+                : "Delete all recorded traffic history? This cannot be undone.",
+            "Reset usage",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (confirm != MessageBoxResult.Yes)
+            return;
+
+        // 1. The persisted history goes first — if the write fails, the caller
+        //    still sees a cleared table and the next flush retries the file.
+        _usageHistory = [];
+        try
+        {
+            _usageStore.Save(_usageHistory);
+        }
+        catch (Exception ex)
+        {
+            _logPanel.Log("WARN", $"[Usage] Could not persist the cleared history: {ex.Message}");
+        }
+
+        // 2. Rebase: what the engine has counted so far becomes "zero", for
+        //    both the display and the periodic delta flushes.
+        var snapshot = running ? _engine.GetUsageSnapshot() : UsageSnapshot.Empty;
+        _usageResetBaseline = snapshot;
+        _flushedUp = snapshot.UpBytes;
+        _flushedDown = snapshot.DownBytes;
+        _flushedBuckets = snapshot.ByProfile.ToDictionary(
+            kvp => kvp.Key, kvp => kvp.Value, StringComparer.OrdinalIgnoreCase);
+        _lastSample = snapshot;
+        _lastSampleAt = DateTime.UtcNow;
+        _usageTick = 0;
+
+        // The table is empty right now: the history is gone and the session
+        // contributes nothing relative to its own baseline. New traffic makes
+        // rows reappear on the next tick.
+        RebuildUsageRows(UsageSnapshot.Empty);
+
+        SetStatus("Usage history cleared — counters restarted from zero.");
+        CopyToast.Show(this, "Usage history cleared", bottomMargin: 64);
+        _logPanel.Log("INFO",
+            $"[Usage] History reset by the user (was running={running}); " +
+            $"baseline rebased to up={snapshot.UpBytes} down={snapshot.DownBytes}.");
+    }
+
+    /// <summary>
+    /// Renders the DNS relay counters and the encrypted-DNS observer's result
+    /// into the Data Usage tab.
+    ///
+    /// This is a DIAGNOSTIC surface, deliberately factual: it reports what the
+    /// relay did and whether an app resolved through an encrypted channel. It
+    /// does NOT claim the network is leak-free — a zero here means "no plaintext
+    /// query failed and no known DoH endpoint was seen in this session", which is
+    /// a weaker statement, and the blind-spot count is shown so the gap is visible.
+    /// </summary>
+    private void UpdateDnsDiagnosticsText()
+    {
+        var d = _engine.GetDnsDiagnostics();
+
+        if (!d.RelayEnabled)
+        {
+            DnsDiagnosticsText.Text =
+                "DNS relay is off — enable it in Settings › DNS to relay plaintext DNS through the proxy.";
+        }
+        else
+        {
+            DnsDiagnosticsText.Text =
+                $"{d.RelayStatus} · captured {d.QueriesCaptured} · relayed {d.QueriesRelayed} · " +
+                $"replies {d.RepliesInjected} · failed {d.RelayFailures} · dropped {d.QueriesDroppedUnparsable}" +
+                (d.Ipv6CaptureActive ? " · IPv4+IPv6" : " · IPv4 only (no IPv6 handle)");
+        }
+
+        // The observer's own line is appended only when it is running, so an
+        // "encrypted DNS detected: 0" never reads as a guarantee.
+        if (d.SniInspectionActive)
+        {
+            DnsDiagnosticsText.Text +=
+                $"\nEncrypted-DNS observer: {d.TlsConnectionsObserved} TLS handshake(s) seen · " +
+                $"{d.EncryptedDnsDetected} to a known encrypted resolver · " +
+                $"{d.SniBlindSpots} unreadable (Encrypted ClientHello)";
+        }
+
+        // WebRTC gets its own line, and BLOCKING is reported ahead of relaying
+        // because it is the reliable option. The three states are genuinely
+        // different and must not be collapsed into one message:
+        //   blocked      → STUN dropped locally, on any port, no proxy involved
+        //   relaying on  → depends on proxy UDP support AND the port list
+        //   both off     → WebRTC reports the real address, by design
+        // Reporting "relaying is off" for a session that is actually blocking
+        // was exactly the kind of ambiguity that made this unreadable.
+        DnsDiagnosticsText.Text += d.WebRtcBlockingEnabled
+            ? $"\nWebRTC: BLOCKING — {d.WebRtcBlocked} STUN request(s) dropped, on any port. " +
+              "Browser video calls will not work." +
+              (d.WebRtcBlockingIpv6Active
+                  ? ""
+                  : "  ← IPv6 blocking is OFF: browsers prefer IPv6 for STUN, so it may still " +
+                    "leak over IPv6.")
+            : d.StunRelayEnabled
+                ? $"\nWebRTC: relaying STUN — {d.StunCaptured} captured · {d.StunRelayed} relayed · " +
+                  $"{d.StunInjected} replies injected · {d.StunFailures} failed" +
+                  (d.StunCaptured == 0
+                      ? "  ← relaying is ON but nothing was captured: WebRTC is using a port " +
+                        "or address family outside the relayed set, so it is leaking directly. " +
+                        "Turn on “Block WebRTC” instead."
+                      : d.StunFailures > 0
+                          ? "  ← failures mean WebRTC fell back to a direct candidate. " +
+                            "Turn on “Block WebRTC” instead."
+                          : "")
+                : "\nWebRTC: unprotected — WebRTC reports your real address. " +
+                  "Enable “Block WebRTC” (reliable) or STUN relaying.";
+
+        // The warning appears only on an actual detection. Its text is the
+        // engine's message, which names the process and the resolver.
+        var detection = _engine.LastEncryptedDnsDetection;
+        if (detection is not null)
+        {
+            EncryptedDnsWarningText.Text = detection;
+            EncryptedDnsWarningText.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            EncryptedDnsWarningText.Visibility = Visibility.Collapsed;
+        }
+    }
+
     /// <summary>The 1-second tick: speeds, session totals, live history rows, periodic flush.</summary>
     private void OnUsageTimerTick()
     {
         var running = _engine.IsRunning;
         var snapshot = _engine.GetUsageSnapshot();
         var now = DateTime.UtcNow;
+
+        UpdateDnsDiagnosticsText();
 
         // Session restart detection: totals shrank → a new START — reset the
         // sampling baseline AND the flush baselines (otherwise the new
@@ -667,7 +822,17 @@ public partial class MainWindow : Window
             _flushedUp = 0;
             _flushedDown = 0;
             _flushedBuckets.Clear();
+            // A reset baseline is an ABSOLUTE snapshot, so it belongs to the
+            // session that produced it. Keeping it across a new START would
+            // clamp every counter to zero forever (the new session's totals are
+            // smaller than the old baseline).
+            _usageResetBaseline = UsageSnapshot.Empty;
         }
+
+        // Everything downstream (display, rows, persisted deltas) is measured
+        // RELATIVE to the last reset, so a reset takes effect immediately even
+        // though the engine's own counters keep running.
+        var session = SessionSinceReset(snapshot, _usageResetBaseline);
 
         var rates = running ? ComputeRates(snapshot, now) : (0L, 0L, 0L);
         UpSpeedText.Text = ByteFormatter.FormatRate(rates.Item1);
@@ -677,9 +842,9 @@ public partial class MainWindow : Window
         if (running)
         {
             SessionTotalsText.Text =
-                $"This session: {ByteFormatter.Format(snapshot.UpBytes)} up, " +
-                $"{ByteFormatter.Format(snapshot.DownBytes)} down " +
-                $"({ByteFormatter.Format(snapshot.TotalBytes)} total).";
+                $"This session: {ByteFormatter.Format(session.UpBytes)} up, " +
+                $"{ByteFormatter.Format(session.DownBytes)} down " +
+                $"({ByteFormatter.Format(session.TotalBytes)} total).";
             if (_engine.LastDnsRelayStatus is { } dns)
                 SessionTotalsText.Text += $"  DNS relay: {dns}";
         }
@@ -690,18 +855,18 @@ public partial class MainWindow : Window
                 : "Tracking starts the moment you press START.";
         }
 
-        UpdateUsageRows(running ? snapshot : UsageSnapshot.Empty);
+        UpdateUsageRows(running ? session : UsageSnapshot.Empty);
 
         // Crash-safety: flush the session's deltas once a minute while running,
         // and the FINAL delta when the engine just stopped.
         if (running)
         {
             if (++_usageTick % 60 == 0)
-                FlushUsageDeltas(snapshot);
+                FlushUsageDeltas(session);
         }
         else if (_usageWasRunning)
         {
-            FlushUsageDeltas(_lastSample ?? UsageSnapshot.Empty);
+            FlushUsageDeltas(SessionSinceReset(_lastSample ?? UsageSnapshot.Empty, _usageResetBaseline));
         }
 
         _lastSample = snapshot;
@@ -823,6 +988,48 @@ public partial class MainWindow : Window
 
     private Dictionary<string, ProfileUsage> _flushedBuckets = new(StringComparer.OrdinalIgnoreCase);
 
+    // ── Reset baseline (Data Usage tab's "Reset Usage") ──
+    // The engine's session counters are CUMULATIVE since START and cannot be
+    // zeroed from the UI. So a reset records the snapshot at that moment as a
+    // baseline and everything displayed/persisted afterwards is measured
+    // RELATIVE to it — the already-moved bytes vanish from the UI without the
+    // engine (or the running flows) being disturbed.
+    private UsageSnapshot _usageResetBaseline = UsageSnapshot.Empty;
+
+    /// <summary>
+    /// The session snapshot with everything up to the last reset subtracted,
+    /// per configuration. Clamped at zero so a session restart (totals shrink)
+    /// or a profile disappearing from the map can never show negative bytes.
+    /// </summary>
+    private static UsageSnapshot SessionSinceReset(UsageSnapshot current, UsageSnapshot baseline)
+    {
+        if (baseline.TotalBytes == 0 && baseline.ByProfile.Count == 0)
+            return current;
+
+        var up = Math.Max(0, current.UpBytes - baseline.UpBytes);
+        var down = Math.Max(0, current.DownBytes - baseline.DownBytes);
+
+        Dictionary<string, ProfileUsage> byProfile;
+        if (current.ByProfile.Count == 0)
+        {
+            byProfile = new Dictionary<string, ProfileUsage>(StringComparer.OrdinalIgnoreCase);
+        }
+        else
+        {
+            byProfile = new Dictionary<string, ProfileUsage>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kvp in current.ByProfile)
+            {
+                var prev = baseline.ByProfile.TryGetValue(kvp.Key, out var b) ? b : default;
+                var dUp = Math.Max(0, kvp.Value.UpBytes - prev.UpBytes);
+                var dDown = Math.Max(0, kvp.Value.DownBytes - prev.DownBytes);
+                if (dUp > 0 || dDown > 0)
+                    byProfile[kvp.Key] = new ProfileUsage(dUp, dDown);
+            }
+        }
+
+        return new UsageSnapshot(up, down, byProfile);
+    }
+
     /// <summary>
     /// False until the constructor finishes <see cref="InitializeComponent"/>
     /// plus state restore. XAML-wired change handlers must be inert before
@@ -908,6 +1115,16 @@ public partial class MainWindow : Window
             SetStatus(ok ? "DNS relay active." : "DNS relay FAILED — see the log.", ok ? StatusSeverity.Info : StatusSeverity.Warning);
             if (!ok)
                 CopyToast.Show(this, "DNS relay failed — proxy may not support UDP", bottomMargin: 64, warning: true);
+        });
+
+        // Encrypted-DNS detections (DoH): the remaining leak path, named as it
+        // happens so it appears in the log while the user is still on the leak
+        // test page — not hours later from a log file. The connection is NOT
+        // blocked here; this is the evidence the Phase 2 toggles act on.
+        _engine.DnsEncryptedDnsDetected += message => Dispatcher.BeginInvoke(() =>
+        {
+            _logPanel.Log("WARN", $"[DNS] {message}");
+            SetStatus("Encrypted DNS (DoH) detected — see the log.", StatusSeverity.Warning);
         });
 
         RefreshProcesses();
@@ -1467,7 +1684,12 @@ public partial class MainWindow : Window
         };
         TestOnSaveCheck.IsChecked = _settings.Preferences.TestProxyOnSave;
         DnsRelayCheck.IsChecked = _settings.Dns.Enabled;
-        StunRelayCheck.IsChecked = _settings.Dns.RelayStun;
+        // Blocking wins over relaying when both were persisted (see
+        // OnDnsPrefChanged): reflect the effective behaviour, not the raw flag,
+        // so the UI never shows two contradictory options ticked.
+        var blockWebRtc = _settings.Dns.BlockWebRtc;
+        BlockWebRtcCheck.IsChecked = blockWebRtc;
+        StunRelayCheck.IsChecked = _settings.Dns.RelayStun && !blockWebRtc;
         DnsResolverCombo.SelectedIndex = _settings.Dns.ResolverOverride switch
         {
             "8.8.8.8" => 1,
@@ -2023,14 +2245,42 @@ public partial class MainWindow : Window
             _ => "1.1.1.1"
         };
         _settings.Dns.RelayStun = StunRelayCheck.IsChecked == true;
+        _settings.Dns.BlockWebRtc = BlockWebRtcCheck.IsChecked == true;
+
+        // Blocking and relaying are opposites, so offering both checked would
+        // leave the effective behaviour up to an internal precedence rule the
+        // user cannot see. Resolve it in the UI, and say so — blocking wins
+        // because it is the option that cannot fail open.
+        if (_settings.Dns.BlockWebRtc && _settings.Dns.RelayStun && !_suppressPreferenceEvents)
+        {
+            StunRelayCheck.IsChecked = false;
+            _settings.Dns.RelayStun = false;
+            _logPanel.Log("WARN",
+                "[WebRTC] Blocking and relaying were both selected — blocking wins " +
+                "(it cannot fail open into a direct STUN candidate).");
+        }
+
         ScheduleSave();
         _logPanel.Log("INFO",
             $"[DNS] Relay-through-proxy {(_settings.Dns.Enabled ? "enabled" : "disabled")} " +
             $"(resolver='{(string.IsNullOrEmpty(_settings.Dns.ResolverOverride) ? "transparent" : _settings.Dns.ResolverOverride)}', " +
-            $"STUN relay={_settings.Dns.RelayStun}) — applies at the next START.");
-        SetStatus(_settings.Dns.Enabled
-            ? "DNS relay enabled — takes effect at the next START."
-            : "DNS relay disabled — takes effect at the next START.");
+            $"WebRTC block={_settings.Dns.BlockWebRtc}, STUN relay={_settings.Dns.RelayStun}) " +
+            "— applies at the next START.");
+
+        // The status line names what is actually protected, because "DNS relay
+        // disabled" read as "nothing is protected" even when WebRTC blocking
+        // was doing its job.
+        var protects = _settings.Dns.Enabled || _settings.Dns.BlockWebRtc || _settings.Dns.RelayStun;
+        SetStatus(
+            _settings.Dns.BlockWebRtc
+                ? "WebRTC blocking enabled (video calls stop) — takes effect at the next START."
+                : _settings.Dns.RelayStun
+                    ? "STUN relaying enabled — takes effect at the next START."
+                    : _settings.Dns.Enabled
+                        ? "DNS relay enabled — takes effect at the next START."
+                        : protects
+                            ? "Settings updated — takes effect at the next START."
+                            : "DNS relay and WebRTC protection disabled — takes effect at the next START.");
     }
 
     // ―― Tray & startup settings (Phase 11) ――
@@ -2381,6 +2631,23 @@ public partial class MainWindow : Window
             }
             : null;
 
+        // WHY Dns AND Optimization ARE COPIED EXPLICITLY (a real, silent bug):
+        // this method builds a BRAND-NEW ApplicationSettings rather than passing
+        // _settings through. Any section not listed here silently reverts to its
+        // property default, so the engine never saw the user's choices.
+        //
+        // The symptom was invisible because the UI reported the settings
+        // correctly — OnDnsPrefChanged wrote them to _settings.Dns and logged
+        // "WebRTC block=True" — and they were saved to disk and read back
+        // correctly on the next launch. They simply never reached the engine:
+        // the START path passed Dns=null, so the UDP DNS ferry, the TCP/53
+        // forced port, the IPv6 TCP handle, the STUN blocker and the SNI
+        // observer were all skipped. Every log therefore contained zero [UdpDns],
+        // [WebRTC] and [Sni] lines while the corresponding settings read "on",
+        // which is indistinguishable from those features silently failing.
+        //
+        // Rule for this method: EVERY settings section must be carried across,
+        // and a test must assert it (see BuildSettingsFromUiTests).
         return new ApplicationSettings
         {
             Proxy = proxy,
@@ -2389,7 +2656,9 @@ public partial class MainWindow : Window
             Proxies = _profiles.Select(p => p.Config).ToList(),
             SelectedProxyName = SelectedProfile?.Name,
             LogLevel = _settings.LogLevel,
-            Preferences = _settings.Preferences
+            Preferences = _settings.Preferences,
+            Dns = _settings.Dns,
+            Optimization = _settings.Optimization
         };
     }
 
@@ -2791,11 +3060,12 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         // Final usage flush — the running session's unflushed delta is never
-        // lost on close (the engine keeps its counters until Dispose).
+        // lost on close (the engine keeps its counters until Dispose). Measured
+        // RELATIVE to the last reset, like every other flush.
         try
         {
             if (_engine.IsRunning)
-                FlushUsageDeltas(_engine.GetUsageSnapshot());
+                FlushUsageDeltas(SessionSinceReset(_engine.GetUsageSnapshot(), _usageResetBaseline));
         }
         catch { /* best-effort — the periodic flush is the safety net */ }
 

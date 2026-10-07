@@ -36,6 +36,14 @@ internal sealed class FlowState
     public WinDivertAddress SynAddress { get; set; }
 
     /// <summary>
+    /// The capture handle this flow's packets arrived on. Injection MUST use the
+    /// same handle: a WinDivert handle can only send packets its own filter/layer
+    /// admits, so an IPv6 flow (captured by the IPv6 handle) cannot be answered
+    /// through the IPv4 handle. Zero = the primary handle (IPv4 flows).
+    /// </summary>
+    public IntPtr SendHandle { get; set; }
+
+    /// <summary>
     /// The process name that owns this connection, resolved at SYN-capture time
     /// (e.g. "curl.exe"). Used for rule matching and logging.
     /// </summary>
@@ -358,17 +366,31 @@ internal sealed class FlowState
     /// <param name="clientIsn">The client ISN from the captured SYN.</param>
     /// <param name="serverIsn">The server ISN (S1) to present to the client.</param>
     /// <param name="synAddress">The WinDivert address from the captured SYN.</param>
+    /// <param name="sendHandle">
+    /// The capture handle the SYN arrived on (see <see cref="SendHandle"/>);
+    /// zero = the ferry's primary (IPv4) handle.
+    /// </param>
     public FlowState(
         FlowKey key,
         uint clientIsn,
         uint serverIsn,
-        WinDivertAddress synAddress)
+        WinDivertAddress synAddress,
+        IntPtr sendHandle = default)
     {
         Key = key;
         ClientIsn = clientIsn;
         ServerIsn = serverIsn;
         SynAddress = synAddress;
+        SendHandle = sendHandle;
     }
+
+    /// <summary>
+    /// The handle to inject toward this flow's client through: the flow's own
+    /// capture handle when set, otherwise the ferry's primary handle. Callers
+    /// MUST use this instead of the raw <c>_captureHandle</c> field.
+    /// </summary>
+    public IntPtr ResolveSendHandle(IntPtr primaryHandle) =>
+        SendHandle != IntPtr.Zero ? SendHandle : primaryHandle;
 
     /// <summary>Marks the flow as active (updates the last-activity timestamp).</summary>
     public void Touch() => LastActivityUtc = DateTime.UtcNow;

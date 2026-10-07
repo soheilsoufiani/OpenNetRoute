@@ -232,12 +232,17 @@ public static class ConfigurationValidator
             errors.Add("DNS settings must not be null.");
         else if (!string.IsNullOrEmpty(settings.Dns.ResolverOverride))
         {
-            // The override must be a strict dotted-quad IPv4 literal (the UDP
-            // ASSOCIATE relay targets an address; no resolution step exists).
-            if (!Rules.DestinationMatch.TryParseIpv4(settings.Dns.ResolverOverride, out _))
+            // The override must be an IP literal (the UDP ASSOCIATE relay targets
+            // an address; no resolution step exists). Both families are allowed:
+            // an IPv4 query can be sent to a v4 resolver and an IPv6 query to a
+            // v6 one through the same association.
+            if (!System.Net.IPAddress.TryParse(settings.Dns.ResolverOverride, out var resolverIp))
                 errors.Add(
-                    $"DNS resolver override '{settings.Dns.ResolverOverride}' is not a valid IPv4 address " +
+                    $"DNS resolver override '{settings.Dns.ResolverOverride}' is not a valid IP address " +
                     "(leave it empty to use each query's own DNS server).");
+            else if (System.Net.IPAddress.IsLoopback(resolverIp))
+                errors.Add(
+                    $"DNS resolver override '{settings.Dns.ResolverOverride}' must not be a loopback address.");
         }
 
         if (settings.Optimization is null)
