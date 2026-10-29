@@ -4,6 +4,27 @@
         Open NetRoute modern theme (v1). Tokens below are DEFAULTS so first paint is
         sane; ThemeApplier swaps them at runtime per light/dark preference.
         All consumption uses DynamicResource so live switches propagate.
+
+        ── HOW THE ANIMATIONS WORK ──
+        Hover / press / selection transitions are done with layered PAINT-ONLY
+        borders whose Opacity is animated (EnterActions / ExitActions on the state
+        trigger), NOT with ColorAnimation on the brushes. Reason: every tint here
+        is a DynamicResource token that ThemeApplier swaps at runtime per theme —
+        a ColorAnimation would WRITE a frozen color and never unbind, so a live
+        theme switch would stop propagating. Opacity multiplies the live brush,
+        so the animation stays theme-agnostic and the tokens stay dynamic.
+
+        Layer conventions used throughout:
+        • tints are exact interior replicas: Margin = the chrome's border
+          thickness, CornerRadius = outer radius minus that thickness;
+        • tints are IsHitTestVisible=False so events pass through to the chrome;
+        • tints sit UNDER the content (z-order) exactly like the old
+          Background-it-replaced sat under the content;
+        • hover eases in FAST and out SLOWER (usually ~0.1 s in, ~0.2 s out) —
+          the standard asymmetry that reads as responsive rather than laggy;
+        • press dips the chrome's scale slightly and springs back slower than
+          it depressed, and the PressLayer adds one more step of darkening on
+          top of the hover tint (as if the surface yields).
     -->
     <SolidColorBrush x:Key="BgWindowBrush" Color="#FAFAFA"/>
     <SolidColorBrush x:Key="CardBrush" Color="#FFFFFF"/>
@@ -51,7 +72,11 @@
         <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 
-    <!-- Quiet modern button: flat, rounded, hover tint, subtle border. -->
+    <!-- Quiet modern button: flat, rounded, hover tint, subtle border.
+         Hover and press are animated tint layers; press additionally dips
+         the chrome's scale (one scaling root shrinks border + tints + content
+         together — scaling only the chrome would leave the tint layers at
+         full size during the dip). -->
     <Style TargetType="Button">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
         <Setter Property="Padding" Value="12,5"/>
@@ -60,23 +85,99 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Chrome"
-                            Background="Transparent"
-                            BorderBrush="{DynamicResource BorderSubtleBrush}"
-                            BorderThickness="1" CornerRadius="8"
-                            Padding="{TemplateBinding Padding}">
-                        <ContentPresenter HorizontalAlignment="Center"
-                                          VerticalAlignment="Center"
-                                          RecognizesAccessKey="True"/>
-                    </Border>
+                    <!-- Background=Transparent keeps the whole rect
+                         hit-testable; the tint layers are
+                         IsHitTestVisible=False so clicks still land on the
+                         control itself. Tints inset by the chrome's 1px
+                         border (Margin) and radius 7 = 8 - 1 replicate the
+                         interior exactly. -->
+                    <Grid x:Name="ScaleRoot"
+                          Background="Transparent"
+                          RenderTransformOrigin="0.5,0.5"
+                          SnapsToDevicePixels="True">
+                        <Grid.RenderTransform>
+                            <ScaleTransform x:Name="PressScale"/>
+                        </Grid.RenderTransform>
+                        <Border x:Name="HoverLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource HoverTintBrush}"
+                                Margin="1" CornerRadius="7" Opacity="0"/>
+                        <Border x:Name="PressLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource TabSelectedBrush}"
+                                Margin="1" CornerRadius="7" Opacity="0"/>
+                        <Border x:Name="Chrome"
+                                Background="Transparent"
+                                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                                BorderThickness="1" CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True"/>
+                        </Border>
+                    </Grid>
                     <ControlTemplate.Triggers>
+                        <!-- Hover: tint eases in fast, out slower. -->
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Chrome" Property="Background"
-                                    Value="{DynamicResource HoverTintBrush}"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.11">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.18"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
+                        <!-- Press: quick dip + one darker step over the hover
+                             tint; release reverses a touch slower than it
+                             depressed. Pressing implies hovering, so the
+                             hover layer stays at full opacity underneath and
+                             the press tint stacks on top of it. -->
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="Chrome" Property="Background"
-                                    Value="{DynamicResource TabSelectedBrush}"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleX"
+                                                         To="0.97" Duration="0:0:0.06"/>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleY"
+                                                         To="0.97" Duration="0:0:0.06"/>
+                                        <DoubleAnimation Storyboard.TargetName="PressLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.06"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleX"
+                                                         To="1" Duration="0:0:0.14"/>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleY"
+                                                         To="1" Duration="0:0:0.14"/>
+                                        <DoubleAnimation Storyboard.TargetName="PressLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.14"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.45"/>
@@ -87,22 +188,80 @@
         </Setter>
     </Style>
 
-    <!-- Primary action (START): filled accent, high emphasis. -->
+    <!-- Primary action (START): filled accent, high emphasis.
+         Hover fades the chrome's opacity (the same 0.88 step the flat style
+         used, now eased) and press dips the scale; the filled surface needs
+         no tint layers because the chrome itself carries the full color. -->
     <Style x:Key="AccentButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
         <Setter Property="Foreground" Value="#FFFFFF"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Chrome"
-                            Background="{DynamicResource AccentBrush}"
-                            CornerRadius="8"
-                            Padding="{TemplateBinding Padding}">
-                        <ContentPresenter HorizontalAlignment="Center"
-                                          VerticalAlignment="Center"/>
-                    </Border>
+                    <Grid x:Name="ScaleRoot"
+                          Background="Transparent"
+                          RenderTransformOrigin="0.5,0.5"
+                          SnapsToDevicePixels="True">
+                        <Grid.RenderTransform>
+                            <ScaleTransform x:Name="PressScale"/>
+                        </Grid.RenderTransform>
+                        <Border x:Name="Chrome"
+                                Background="{DynamicResource AccentBrush}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Chrome" Property="Opacity" Value="0.88"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Chrome"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0.88" Duration="0:0:0.11">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Chrome"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.18"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleX"
+                                                         To="0.97" Duration="0:0:0.06"/>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleY"
+                                                         To="0.97" Duration="0:0:0.06"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleX"
+                                                         To="1" Duration="0:0:0.14"/>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleY"
+                                                         To="1" Duration="0:0:0.14"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.45"/>
@@ -283,23 +442,71 @@
             </Setter.Value>
         </Setter>
     </Style>
+    <!-- Dropdown rows: hover and select eases via tint layers exactly like
+         the app's buttons — a choice highlighted while keyboard-browsing
+         slides its tint on instead of popping. -->
     <Style TargetType="ComboBoxItem">
         <Setter Property="Foreground" Value="{DynamicResource InputTextBrush}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ComboBoxItem">
-                    <Border x:Name="Bd" Background="Transparent" CornerRadius="4"
-                            Padding="10,6" Margin="4,1">
-                        <ContentPresenter/>
-                    </Border>
+                    <Grid Margin="4,1" Background="Transparent" SnapsToDevicePixels="True">
+                        <Border x:Name="HoverLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource HoverTintBrush}"
+                                CornerRadius="4" Opacity="0"/>
+                        <Border x:Name="SelectLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource TabSelectedBrush}"
+                                CornerRadius="4" Opacity="0"/>
+                        <Border Padding="10,6">
+                            <ContentPresenter/>
+                        </Border>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsHighlighted" Value="True">
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{DynamicResource HoverTintBrush}"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.08"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.14"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{DynamicResource TabSelectedBrush}"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="SelectLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.1">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="SelectLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.14"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -343,20 +550,69 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Root" Background="{TemplateBinding Background}"
-                            CornerRadius="6">
-                        <ContentPresenter HorizontalAlignment="Center"
-                                          VerticalAlignment="Center"/>
-                    </Border>
+                    <Grid>
+                        <Border x:Name="HoverLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource HoverTintBrush}"
+                                CornerRadius="6" Opacity="0"/>
+                        <Border x:Name="Root" Background="{TemplateBinding Background}"
+                                CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                    </Grid>
                     <ControlTemplate.Triggers>
+                        <!-- Hover: the chip's round tint fades in behind the
+                             glyph; the FOREGROUND swap stays a setter (it is a
+                             DynamicResource token, not animatable without
+                             freezing it). -->
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Root" Property="Background"
-                                    Value="{DynamicResource HoverTintBrush}"/>
                             <Setter Property="Foreground"
                                     Value="{DynamicResource TextPrimaryBrush}"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.1">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.16"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
+                        <!-- Press: quick fade of the whole chip; release
+                             restores it slightly slower. -->
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter Property="Opacity" Value="0.7"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Root"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0.7" Duration="0:0:0.06"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Root"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.12"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -365,7 +621,11 @@
     </Style>
 
     <!-- START/STOP state toggle: green while disconnected, red while running.
-         Content switches with IsChecked; engine wiring is code-behind. -->
+         Content switches with IsChecked; engine wiring is code-behind.
+         BOTH color states are animated: the green base is the chrome's
+         permanent fill and the RUNNING state only fades the danger color in
+         over it, so START→STOP and STOP→START both glide instead of
+         snapping when the engine toggles. -->
     <Style x:Key="StateToggleButton" TargetType="ToggleButton">
         <Setter Property="Foreground" Value="#FFFFFF"/>
         <Setter Property="Content" Value="START"/>
@@ -377,19 +637,102 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="Chrome"
-                            Background="{DynamicResource SuccessBrush}"
-                            CornerRadius="8" Padding="{TemplateBinding Padding}">
-                        <ContentPresenter HorizontalAlignment="Center"
+                    <!-- The content presenter is a SIBLING of the chrome (with
+                         the chrome's Padding as its margin) so it can sit ABOVE
+                         the danger layer: the layer must cover the fill but
+                         never wash the white label. -->
+                    <Grid x:Name="ScaleRoot"
+                          Background="Transparent"
+                          RenderTransformOrigin="0.5,0.5"
+                          SnapsToDevicePixels="True">
+                        <Grid.RenderTransform>
+                            <ScaleTransform x:Name="PressScale"/>
+                        </Grid.RenderTransform>
+                        <Border x:Name="Chrome"
+                                Background="{DynamicResource SuccessBrush}"
+                                CornerRadius="8"/>
+                        <Border x:Name="DangerLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource DangerBrush}"
+                                CornerRadius="8"
+                                Opacity="0"/>
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                          HorizontalAlignment="Center"
                                           VerticalAlignment="Center"/>
-                    </Border>
+                    </Grid>
                     <ControlTemplate.Triggers>
+                        <!-- Engine running: danger tint fades over the green
+                             base; stopping reverses even slower — a red that
+                             appeared instantly would read as a flicker. -->
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Chrome" Property="Background"
-                                    Value="{DynamicResource DangerBrush}"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="DangerLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.2">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="DangerLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.28"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Chrome" Property="Opacity" Value="0.9"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="ScaleRoot"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0.9" Duration="0:0:0.11"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="ScaleRoot"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.18"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleX"
+                                                         To="0.97" Duration="0:0:0.06"/>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleY"
+                                                         To="0.97" Duration="0:0:0.06"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleX"
+                                                         To="1" Duration="0:0:0.14"/>
+                                        <DoubleAnimation Storyboard.TargetName="PressScale"
+                                                         Storyboard.TargetProperty="ScaleY"
+                                                         To="1" Duration="0:0:0.14"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.5"/>
@@ -436,6 +779,10 @@
             </Setter.Value>
         </Setter>
     </Style>
+    <!-- Tab pills: hover and selection tints both ease (layers, exactly like
+         the buttons); the content-panel fade/slide on SWITCH is a separate
+         attached behavior — TabContentAnimator in code — because the selected
+         content lives in a different visual subtree than the tabs. -->
     <Style TargetType="TabItem">
         <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
         <!-- NO Cursor setter here: tab content is a *logical* child of its
@@ -443,35 +790,78 @@
              the TabItem silently flowed into the whole tab content area (the
              arrow turned into a hand over labels, cards, list rows — places
              where clicking does nothing). The pill's own Hand cursor now lives
-             on the Pill border inside the template below, which the tab
+             on the pill's root grid inside the template below, which the tab
              content is NOT a child of, so it cannot leak. -->
         <Setter Property="Margin" Value="0,0,6,0"/>
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TabItem">
-                    <Border x:Name="Pill" Background="Transparent"
-                            Cursor="Hand"
-                            CornerRadius="8" Padding="16,8"
-                            SnapsToDevicePixels="True">
-                        <ContentPresenter x:Name="Header"
-                                          ContentSource="Header" RecognizesAccessKey="True"/>
-                    </Border>
+                    <Grid Background="Transparent" Cursor="Hand"
+                          SnapsToDevicePixels="True">
+                        <Border x:Name="SelectLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource AccentBrush}"
+                                CornerRadius="8" Opacity="0"/>
+                        <Border x:Name="HoverLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource TabHoverBrush}"
+                                CornerRadius="8" Opacity="0"/>
+                        <ContentPresenter ContentSource="Header"
+                                          RecognizesAccessKey="True"
+                                          Margin="16,8"/>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="Pill" Property="Background"
-                                    Value="{DynamicResource AccentBrush}"/>
                             <Setter Property="Foreground" Value="#FFFFFF"/>
                             <Setter Property="FontWeight" Value="SemiBold"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="SelectLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.16">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="SelectLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.24"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                         <MultiTrigger>
                             <MultiTrigger.Conditions>
                                 <Condition Property="IsMouseOver" Value="True"/>
                                 <Condition Property="IsSelected" Value="False"/>
                             </MultiTrigger.Conditions>
-                            <Setter TargetName="Pill" Property="Background"
-                                    Value="{DynamicResource TabHoverBrush}"/>
                             <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+                            <MultiTrigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.12"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </MultiTrigger.EnterActions>
+                            <MultiTrigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.2"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </MultiTrigger.ExitActions>
                         </MultiTrigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -479,7 +869,9 @@
         </Setter>
     </Style>
 
-    <!-- Data rows: airy heights, clean headers, quiet separators. -->
+    <!-- Data rows: airy heights, clean headers, quiet separators. The hover
+         and selection seeps are the same tint-layer pattern as the buttons:
+         the old Background setters snapped, now each fades. -->
     <Style TargetType="GridViewColumnHeader">
         <Setter Property="Template">
             <Setter.Value>
@@ -503,19 +895,68 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ListViewItem">
-                    <Border x:Name="Row" Background="Transparent"
-                            CornerRadius="4" Padding="{TemplateBinding Padding}">
-                        <GridViewRowPresenter Content="{TemplateBinding Content}"
-                                              Columns="{TemplateBinding GridView.ColumnCollection}"/>
-                    </Border>
+                    <Grid Background="Transparent" SnapsToDevicePixels="True">
+                        <Border x:Name="HoverLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource HoverTintBrush}"
+                                CornerRadius="4" Opacity="0"/>
+                        <Border x:Name="SelectLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource TabSelectedBrush}"
+                                CornerRadius="4" Opacity="0"/>
+                        <Border Padding="{TemplateBinding Padding}">
+                            <GridViewRowPresenter Content="{TemplateBinding Content}"
+                                                  Columns="{TemplateBinding GridView.ColumnCollection}"/>
+                        </Border>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Row" Property="Background"
-                                    Value="{DynamicResource HoverTintBrush}"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.1">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.16"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="Row" Property="Background"
-                                    Value="{DynamicResource TabSelectedBrush}"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="SelectLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.12">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut"/>
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="SelectLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.18"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -533,7 +974,10 @@
          on hover/drag; chevron arrow buttons at both ends for line scrolling;
          clicking the empty track still page-scrolls. Thickness is set per
          orientation (never Height on a vertical bar — that shrinks its
-         length). Implicit style — applies to every ScrollViewer in the app. -->
+         length). Implicit style — applies to every ScrollViewer in the app.
+         (The thumb's hover stays a snap — the two gray tokens are so close
+         that an animated cross-fade would be invisible; the arrows animate
+         the same faint tint as the buttons above.) -->
     <Style x:Key="ScrollPageButton" TargetType="RepeatButton">
         <Setter Property="OverridesDefaultStyle" Value="True"/>
         <Setter Property="Focusable" Value="False"/>
@@ -556,18 +1000,39 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="RepeatButton">
-                    <Border x:Name="ArrowB" Background="Transparent" CornerRadius="3">
-                        <ContentPresenter HorizontalAlignment="Center"
-                                          VerticalAlignment="Center"/>
-                    </Border>
+                    <Grid>
+                        <Border x:Name="HoverLayer"
+                                IsHitTestVisible="False"
+                                Background="{DynamicResource HoverTintBrush}"
+                                CornerRadius="3" Opacity="0"/>
+                        <Border x:Name="ArrowB" Background="Transparent" CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="ArrowB" Property="Background"
-                                    Value="{DynamicResource HoverTintBrush}"/>
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="1" Duration="0:0:0.1"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="HoverLayer"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         To="0" Duration="0:0:0.16"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="ArrowB" Property="Background"
-                                    Value="{DynamicResource TabHoverBrush}"/>
+                            <Setter TargetName="HoverLayer" Property="Opacity" Value="1"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
