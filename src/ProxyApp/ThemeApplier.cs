@@ -87,8 +87,17 @@ public static class ThemeApplier
                                      : Solid(0x14, 0x00, 0x00, 0x00);
         // Accent-derived translucent tint used for selected tabs/rows.
         res["TabSelectedBrush"] = Solid(0x26, accent.R, accent.G, accent.B);
+        // Tabs hover INSIDE the sliding segmented strip, which stays near-black
+        // in both palettes — so the wash is white-based in both as well.
         res["TabHoverBrush"] = dark ? Solid(0x33, 0xFF, 0xFF, 0xFF)
-                                    : Solid(0x14, 0x00, 0x00, 0x00);
+                                    : Solid(0x1F, 0xFF, 0xFF, 0xFF);
+        // Sliding segmented tab strip (FlatTabs + TabSlider). The near-black
+        // track / gray handle are constant anchors faithful to the ported
+        // demo; only the muted label tint is listed for future calibration.
+        res["TabTrackBrush"] = dark ? Solid(255, 0x14, 0x14, 0x14)
+                                    : Solid(255, 0x0F, 0x0F, 0x0F);
+        res["TabHandleBrush"] = Solid(255, 0x53, 0x53, 0x53);
+        res["TabTextMutedBrush"] = Solid(0x99, 0xFF, 0xFF, 0xFF);
         res["AccentBrush"] = new SolidColorBrush(accent);
 
         // Input & state tokens (fields, combo popups, start/stop state button).

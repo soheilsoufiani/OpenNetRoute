@@ -21,6 +21,7 @@
 
         <TabControl x:Name="MainTabs" Grid.Row="0" Style="{StaticResource FlatTabs}"
                     local:TabContentAnimator.Enabled="True"
+                    local:TabSlider.Enabled="True"
                     Margin="14,10,14,0">
 
             <!-- ═══ TAB: PROXIES ═══ -->
@@ -64,44 +65,41 @@
                                 <ItemsControl x:Name="ProfileCardList">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <!-- Click-to-select card. The hover and
-                                                 selection tints are animated, paint-only
-                                                 layers (opacity eased in/out), not swapped
-                                                 Background brushes: a DynamicResource-backed
-                                                 color cannot be animated without freezing it
-                                                 (ThemeApplier swaps theme tokens at runtime),
-                                                 and the old snap read as a hard flip when
-                                                 switching between configs. Layer order mirrors
-                                                 the old trigger order — hover beneath selection —
-                                                 so a hovered SELECTED card still reads as
-                                                 selected; the accent BORDER on selection stays a
-                                                 setter (a brush, not animatable, and the tint
-                                                 anchors the transition well enough alone). -->
-                                            <Border x:Name="CardRoot"
-                                                    Tag="{Binding}"
-                                                    MouseLeftButtonUp="OnProxyCardClicked"
-                                                    Background="{DynamicResource CardBrush}"
-                                                    BorderBrush="{DynamicResource BorderSubtleBrush}"
-                                                    BorderThickness="1"
-                                                    CornerRadius="8"
-                                                    Padding="12,10,10,10"
-                                                    Margin="0,0,0,8"
-                                                    SnapsToDevicePixels="True">
+                                            <Border Tag="{Binding}"
+                                                    MouseLeftButtonUp="OnProxyCardClicked">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="{DynamicResource CardBrush}"/>
+                                                        <Setter Property="BorderBrush" Value="{DynamicResource BorderSubtleBrush}"/>
+                                                        <Setter Property="BorderThickness" Value="1"/>
+                                                        <Setter Property="CornerRadius" Value="8"/>
+                                                        <Setter Property="Padding" Value="12,10,10,10"/>
+                                                        <Setter Property="Margin" Value="0,0,0,8"/>
+                                                        <Style.Triggers>
+                                                            <!-- No Hand cursor: the card is a large
+                                                                 surface and the arrow must stay normal
+                                                                 outside real buttons. The hover tint
+                                                                 keeps the click-to-select affordance.
+                                                                 IsMouseOver is listed BEFORE IsSelected
+                                                                 so a hovered selected card keeps its
+                                                                 selection background. -->
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="Background"
+                                                                        Value="{DynamicResource HoverTintBrush}"/>
+                                                            </Trigger>
+                                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                                <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}"/>
+                                                                <Setter Property="Background" Value="{DynamicResource TabSelectedBrush}"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
                                                 <Grid>
-                                                    <Border x:Name="HoverLayer"
-                                                            IsHitTestVisible="False"
-                                                            Background="{DynamicResource HoverTintBrush}"
-                                                            Margin="1" CornerRadius="7" Opacity="0"/>
-                                                    <Border x:Name="SelectLayer"
-                                                            IsHitTestVisible="False"
-                                                            Background="{DynamicResource TabSelectedBrush}"
-                                                            Margin="1" CornerRadius="7" Opacity="0"/>
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*"/>
-                                                            <ColumnDefinition Width="Auto"/>
-                                                            <ColumnDefinition Width="Auto"/>
-                                                        </Grid.ColumnDefinitions>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
 
                                                     <!-- Line 1: config name (semibold);
                                                          line 2: host : port (normal);
@@ -182,87 +180,8 @@
                                                                   Width="13" Height="13" Stretch="Uniform"/>
                                                         </Button>
                                                     </StackPanel>
-                                                    </Grid>
                                                 </Grid>
                                             </Border>
-                                            <DataTemplate.Triggers>
-                                                <!-- Hover: the click-to-select affordance eases
-                                                     in; on a SELECTED card the hover stays off
-                                                     (condition 2) so the selection tint is never
-                                                     covered by the hover wash. No Hand cursor:
-                                                     the card is a large surface and the arrow
-                                                     must stay normal outside real buttons.
-                                                     MultiDATAtrigger: MultiTrigger conditions may
-                                                     reference PROPERTIES only — a Binding
-                                                     condition inside a plain MultiTrigger compiles
-                                                     fine but throws "Must have non-null value for
-                                                     'Property'" when the template seals at first
-                                                     apply, which crashed the app at startup.
-                                                     MultiDataTrigger is the binding-condition
-                                                     form (RelativeSource Self here is whichever
-                                                     element owns the trigger — the card root in
-                                                     this template — and the presenter covers the
-                                                     same rect either way, so the hover reads the
-                                                     same). -->
-                                                <MultiDataTrigger>
-                                                    <MultiDataTrigger.Conditions>
-                                                        <Condition Binding="{Binding RelativeSource={RelativeSource Self}, Path=IsMouseOver}" Value="True"/>
-                                                        <Condition Binding="{Binding IsSelected}" Value="False"/>
-                                                    </MultiDataTrigger.Conditions>
-                                                    <MultiDataTrigger.EnterActions>
-                                                        <BeginStoryboard>
-                                                            <Storyboard>
-                                                                <DoubleAnimation Storyboard.TargetName="HoverLayer"
-                                                                                 Storyboard.TargetProperty="Opacity"
-                                                                                 To="1" Duration="0:0:0.12">
-                                                                    <DoubleAnimation.EasingFunction>
-                                                                        <CubicEase EasingMode="EaseOut"/>
-                                                                    </DoubleAnimation.EasingFunction>
-                                                                </DoubleAnimation>
-                                                            </Storyboard>
-                                                        </BeginStoryboard>
-                                                    </MultiDataTrigger.EnterActions>
-                                                    <MultiDataTrigger.ExitActions>
-                                                        <BeginStoryboard>
-                                                            <Storyboard>
-                                                                <DoubleAnimation Storyboard.TargetName="HoverLayer"
-                                                                                 Storyboard.TargetProperty="Opacity"
-                                                                                 To="0" Duration="0:0:0.2"/>
-                                                            </Storyboard>
-                                                        </BeginStoryboard>
-                                                    </MultiDataTrigger.ExitActions>
-                                                </MultiDataTrigger>
-                                                <!-- Selection: the tint fades in — switching between
-                                                     configs reads as one surface handing over to
-                                                     the next. The accent border (above) is the
-                                                     sharp part of the state; the tint the soft part. -->
-                                                <DataTrigger Binding="{Binding IsSelected}" Value="True">
-                                                    <Setter TargetName="CardRoot" Property="BorderBrush"
-                                                            Value="{DynamicResource AccentBrush}"/>
-                                                    <DataTrigger.EnterActions>
-                                                        <BeginStoryboard>
-                                                            <Storyboard>
-                                                                <DoubleAnimation Storyboard.TargetName="SelectLayer"
-                                                                                 Storyboard.TargetProperty="Opacity"
-                                                                                 To="1" Duration="0:0:0.15">
-                                                                    <DoubleAnimation.EasingFunction>
-                                                                        <CubicEase EasingMode="EaseOut"/>
-                                                                    </DoubleAnimation.EasingFunction>
-                                                                </DoubleAnimation>
-                                                            </Storyboard>
-                                                        </BeginStoryboard>
-                                                    </DataTrigger.EnterActions>
-                                                    <DataTrigger.ExitActions>
-                                                        <BeginStoryboard>
-                                                            <Storyboard>
-                                                                <DoubleAnimation Storyboard.TargetName="SelectLayer"
-                                                                                 Storyboard.TargetProperty="Opacity"
-                                                                                 To="0" Duration="0:0:0.22"/>
-                                                            </Storyboard>
-                                                        </BeginStoryboard>
-                                                    </DataTrigger.ExitActions>
-                                                </DataTrigger>
-                                            </DataTemplate.Triggers>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>

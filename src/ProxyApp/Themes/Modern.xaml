@@ -33,7 +33,14 @@
     <SolidColorBrush x:Key="TextSecondaryBrush" Color="#666666"/>
     <SolidColorBrush x:Key="HoverTintBrush" Color="#14000000"/>
     <SolidColorBrush x:Key="TabSelectedBrush" Color="#180078D7"/>
-    <SolidColorBrush x:Key="TabHoverBrush" Color="#14FFFFFF"/>
+    <SolidColorBrush x:Key="TabHoverBrush" Color="#1FFFFFFF"/>
+    <!-- Sliding segmented tab strip (TabSlider + FlatTabs template). The
+         near-black track and its gray handle are deliberate constants faithful
+         to the ported demo — they anchor the strip in BOTH palettes; the muted
+         labels are white-based because they always sit on that dark track. -->
+    <SolidColorBrush x:Key="TabTrackBrush" Color="#0F0F0F"/>
+    <SolidColorBrush x:Key="TabHandleBrush" Color="#535353"/>
+    <SolidColorBrush x:Key="TabTextMutedBrush" Color="#99FFFFFF"/>
     <SolidColorBrush x:Key="AccentBrush" Color="#0078D7"/>
     <SolidColorBrush x:Key="InputBackgroundBrush" Color="#FFFFFF"/>
     <SolidColorBrush x:Key="InputBorderBrush" Color="#D5D5E0"/>
@@ -765,13 +772,36 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
-                        <Border Grid.Row="0"
-                                BorderBrush="{DynamicResource BorderSubtleBrush}"
-                                BorderThickness="0,0,0,1" Margin="0,2,0,10">
-                            <!-- Plain wrap host: TabPanel special-cases the
-                                 selected tab (bottom-alignment + resize) which
-                                 clipped the pill's right corners. -->
-                            <WrapPanel IsItemsHost="True" Margin="0,4,0,4"/>
+                        <!-- Sliding segmented tab strip (ported from the CSS/JS
+                             demo): one dark rounded track, equal-width slots,
+                             and a lighter handle that GLIDES under the newly
+                             selected tab on every switch. TabSlider (attached
+                             behavior in code) owns the geometry and the 300 ms
+                             translate animation; the PART_ names are its
+                             contract (resolved via Template.FindName). -->
+                        <Border Grid.Row="0" x:Name="PART_SlideTrack"
+                                Background="{DynamicResource TabTrackBrush}"
+                                CornerRadius="8" Padding="4" Margin="0,2,0,10">
+                            <!-- Clip so a mid-flight handle never spills out
+                                 of the rounded track (demo: overflow hidden). -->
+                            <Grid ClipToBounds="True">
+                                <!-- The sliding pill. Sized and translated by
+                                     TabSlider in code: width = slot * 0.94,
+                                     height = 80% of the strip (10% bands
+                                     top/bottom) — i.e. the demo's
+                                     scale(0.94, 0.8) baked into geometry. -->
+                                <Border x:Name="PART_SlideHandle"
+                                        Background="{DynamicResource TabHandleBrush}"
+                                        CornerRadius="6"
+                                        HorizontalAlignment="Left"
+                                        VerticalAlignment="Stretch"
+                                        SnapsToDevicePixels="True"/>
+                                <!-- Equal-width slots. Columns are set by
+                                     TabSlider: UniformGrid's auto arrange would
+                                     go grid-shaped (rows!) for non-square item
+                                     counts, so an explicit count is required. -->
+                                <UniformGrid x:Name="PART_SlideHost" IsItemsHost="True"/>
+                            </Grid>
                         </Border>
                         <ContentPresenter Grid.Row="1" ContentSource="SelectedContent"/>
                     </Grid>
@@ -779,71 +809,50 @@
             </Setter.Value>
         </Setter>
     </Style>
-    <!-- Tab pills: hover and selection tints both ease (layers, exactly like
-         the buttons); the content-panel fade/slide on SWITCH is a separate
-         attached behavior — TabContentAnimator in code — because the selected
-         content lives in a different visual subtree than the tabs. -->
+    <!-- Tabs inside the segmented strip: the sliding handle UNDER the labels
+         is the selection indicator, so there is deliberately NO per-tab
+         selection fill anymore. Labels center in their equal-width slot; a
+         faint white wash eases in on hover (the strip is dark in both
+         palettes, so the wash and the lightening label are white-based).
+         The content-panel fade/slide on Switch stays with TabContentAnimator,
+         which lives in its own visual subtree (the selected content host). -->
     <Style TargetType="TabItem">
-        <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TabTextMutedBrush}"/>
         <!-- NO Cursor setter here: tab content is a *logical* child of its
              TabItem, and Cursor is an inheritable property — a Hand cursor on
              the TabItem silently flowed into the whole tab content area (the
              arrow turned into a hand over labels, cards, list rows — places
-             where clicking does nothing). The pill's own Hand cursor now lives
+             where clicking does nothing). The strip's own Hand cursor lives
              on the pill's root grid inside the template below, which the tab
              content is NOT a child of, so it cannot leak. -->
-        <Setter Property="Margin" Value="0,0,6,0"/>
+        <Setter Property="Margin" Value="0"/>
         <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TabItem">
                     <Grid Background="Transparent" Cursor="Hand"
                           SnapsToDevicePixels="True">
-                        <Border x:Name="SelectLayer"
-                                IsHitTestVisible="False"
-                                Background="{DynamicResource AccentBrush}"
-                                CornerRadius="8" Opacity="0"/>
                         <Border x:Name="HoverLayer"
                                 IsHitTestVisible="False"
                                 Background="{DynamicResource TabHoverBrush}"
-                                CornerRadius="8" Opacity="0"/>
+                                CornerRadius="6" Opacity="0"/>
                         <ContentPresenter ContentSource="Header"
                                           RecognizesAccessKey="True"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
                                           Margin="16,8"/>
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsSelected" Value="True">
                             <Setter Property="Foreground" Value="#FFFFFF"/>
                             <Setter Property="FontWeight" Value="SemiBold"/>
-                            <Trigger.EnterActions>
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="SelectLayer"
-                                                         Storyboard.TargetProperty="Opacity"
-                                                         To="1" Duration="0:0:0.16">
-                                            <DoubleAnimation.EasingFunction>
-                                                <CubicEase EasingMode="EaseOut"/>
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </Trigger.EnterActions>
-                            <Trigger.ExitActions>
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="SelectLayer"
-                                                         Storyboard.TargetProperty="Opacity"
-                                                         To="0" Duration="0:0:0.24"/>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </Trigger.ExitActions>
                         </Trigger>
                         <MultiTrigger>
                             <MultiTrigger.Conditions>
                                 <Condition Property="IsMouseOver" Value="True"/>
                                 <Condition Property="IsSelected" Value="False"/>
                             </MultiTrigger.Conditions>
-                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+                            <Setter Property="Foreground" Value="#FFFFFF"/>
                             <MultiTrigger.EnterActions>
                                 <BeginStoryboard>
                                     <Storyboard>
