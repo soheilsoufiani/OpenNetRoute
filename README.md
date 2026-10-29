@@ -46,10 +46,10 @@ Proxy profiles can be tested before use, making it easier to verify connectivity
 
 Open NetRoute intercepts **all plaintext DNS system-wide** and relays it through the configured proxy, on both of DNS's transports and both address families:
 
-* **UDP 53 over IPv4 and IPv6** — relayed via SOCKS5 UDP ASSOCIATE
-* **TCP 53 over IPv4 and IPv6** — the fallback transport for truncated answers, relayed via SOCKS5 CONNECT
+* **UDP 53 over IPv4 and IPv6** — relayed via SOCKS5 UDP ASSOCIATE; on a proxy that rejects UDP ASSOCIATE, queries are answered with a **truncated (TC=1)** reply so the client re-resolves over TCP/53, which is relayed
+* **TCP 53 over IPv4 and IPv6** — the fallback transport for truncated answers, relayed via SOCKS5 CONNECT (this is what keeps DNS working on proxies without UDP support)
 
-Every query is dropped rather than sent directly if it cannot be relayed (**fail-closed**), and the Windows resolver cache is flushed at START and STOP so pre-START answers cannot bypass the relay. A query that fails takes a moment to retry; that is the intended trade-off versus a silent leak.
+Every query is dropped rather than sent directly if it cannot be relayed (**fail-closed**) — the TC fallback above is the one engineered exception, and it *answers* a query rather than releasing it — and the Windows resolver cache is flushed at START and STOP so pre-START answers cannot bypass the relay. A query that fails takes a moment to retry; that is the intended trade-off versus a silent leak.
 
 **Encrypted DNS is not relayed, but it is watched.** A passive observer reads the hostname from the TLS ClientHello on outbound TCP/443 (sent in the clear by design) and names the app and resolver doing the encrypted resolving. It opens its handle in sniff mode, so it only copies packets and cannot affect your connection. The Data Usage tab shows its counters, and detections appear in the log while you are still on the leak-test page.
 
@@ -246,7 +246,7 @@ You can also use the `Debug` option if you need to investigate a connection prob
 
 ## DNS and Privacy
 
-Open NetRoute relays **all plaintext DNS** through the proxy, system-wide, on both transports and both address families (UDP/53 and TCP/53, IPv4 and IPv6). While the relay runs, plaintext DNS has no direct path out of the machine — a query that cannot be relayed is dropped, never sent directly.
+Open NetRoute relays **all plaintext DNS** through the proxy, system-wide, on both transports and both address families (UDP/53 and TCP/53, IPv4 and IPv6). While the relay runs, plaintext DNS has no direct path out of the machine — a query that cannot be relayed is dropped, never sent directly. A proxy that refuses UDP ASSOCIATE does not take DNS down: queries get a truncated reply so the client re-resolves over TCP/53, which is relayed through the proxy regardless.
 
 ```text
 Application

@@ -36,9 +36,13 @@ namespace ProxyApp.WinDivert;
 /// reconstruction — a crafted question section was rejected by the client's
 /// resolver).</item>
 /// <item>Relay failure or timeout is FAIL-CLOSED: the captured query is
-/// dropped and traced; the client's resolver retries. If the proxy does not
-/// support UDP ASSOCIATE, system DNS fails while enabled — disable the
-/// setting or enable UDP support in the proxy.</item>
+/// dropped and traced; the client's resolver retries — UNLESS the failure is
+/// that the proxy has no usable UDP ASSOCIATE at all. That case is proven by
+/// an eager probe (and re-proved per query), and instead of taking ALL system
+/// DNS down with the relay, queries are answered with a TRUNCATED (TC=1)
+/// reply (<see cref="DnsTruncatedReply"/>), so the client re-resolves over
+/// TCP/53 — a forced-proxy port on the <see cref="TcpFerry"/> that needs only
+/// CONNECT. DNS keeps resolving on UDP-less proxies.</item>
 /// <item>Injected replies are INBOUND (the Outbound address flag cleared) —
 /// the capture filter is outbound-only, so no capture/injection loop (E8-a/E8-b
 /// verified).</item>
@@ -47,10 +51,12 @@ namespace ProxyApp.WinDivert;
 /// direct path. This includes IPv6 packets carrying extension headers.</item>
 /// <item>The Windows resolver cache is flushed at START and STOP, so a name
 /// resolved before interception cannot be answered from cache without being
-/// relayed.</item>
+/// relayed. The flush reports its failure mode (P/Invoke error or the
+/// ipconfig fallback) instead of a bare false.</item>
 /// <item>Known limits: encrypted DNS (DoH/DoT/DoQ) bypasses packet
 /// interception entirely, and custom resolvers on non-standard ports are
-/// outside the port-53 capture; the proxy must support UDP ASSOCIATE.</item>
+/// outside the port-53 capture; STUN relaying additionally requires a
+/// UDP-capable proxy (DNS does not — see the fallback above).</item>
 /// </list>
 /// </summary>
 public sealed class UdpDnsFerry : IDisposable
@@ -134,6 +140,19 @@ public sealed class UdpDnsFerry : IDisposable
     /// <summary>STUN/ICE datagrams dropped by the WebRTC block.</summary>
     private long _webRtcBlocked;
 
+    /// <summary>DNS queries answered locally with a truncated (TC=1) reply.</summary>
+    private long _dnsTcpFallbackReplies;
+
+    // ── DNS-over-TCP fallback state (a proxy WITHOUT UDP ASSOCIATE) ──
+    // Set by the eager relay probe once it is PROVEN that the association can
+    // never be established (SOCKS5 reply 0x07 "command not supported" is the
+    // classic case on full-VPN backends). While set, DNS queries are answered
+    // locally with a truncated (TC=1) reply — see DnsTruncatedReply — so the
+    // client re-resolves over TCP/53, which the TCP ferry force-relays through
+    // the proxy over CONNECT (which such proxies do support). Cleared again
+    // when a probe later succeeds, so a proxy coming up restores plain UDP.
+    private volatile bool _tcpFallbackActive;
+
     /// <summary>Total captured STUN/ICE datagrams (UDP, DNS or STUN ports).</summary>
     internal long StunCaptured => Interlocked.Read(ref _stunCaptured);
 
@@ -168,6 +187,17 @@ public sealed class UdpDnsFerry : IDisposable
 
     /// <summary>Total relay failures (fail-closed drops + client retry).</summary>
     internal long RelayFailures => Interlocked.Read(ref _relayFailures);
+
+    /// <summary>
+    /// True when the eager relay probe has PROVEN the proxy has no usable UDP
+    /// ASSOCIATE and queries are being answered via the DNS-over-TCP fallback.
+    /// Surfaced so the UI says "TCP fallback — DNS resolves" rather than
+    /// reporting a plain relay failure as if DNS were dead.
+    /// </summary>
+    internal bool IsTcpFallbackActive => _tcpFallbackActive;
+
+    /// <summary>Queries answered locally with the truncated (TC=1) reply.</summary>
+    internal long DnsTcpFallbackReplies => Interlocked.Read(ref _dnsTcpFallbackReplies);
 
     /// <summary>Creates the ferry. <paramref name="relayFactory"/> creates one relay per session.</summary>
     /// <param name="relayStatus">Optional UI sink for the eager relay-probe result
@@ -439,12 +469,13 @@ public sealed class UdpDnsFerry : IDisposable
         //    cache without any query to intercept. Flushing forces the next
         //    lookup to go through the relay. Only meaningful with the DNS leg
         //    on — flushing with only WebRTC blocking would discard the cache
-        //    for no benefit. ──
+        //    for no benefit. The flush method returns a full diagnostic line
+        //    (success, or the Win32 error and whether the ipconfig fallback
+        //    rescued it) — previously the failure reason was discarded, which
+        //    left a real user report ("flush failed") undiagnosable. ──
         if (dnsLeg)
         {
-            Trace(DnsCache.Flush()
-                ? "Windows DNS cache flushed — pre-START answers cannot bypass the relay."
-                : "Could not flush the Windows DNS cache — pre-START answers may be served from cache.");
+            Trace(DnsCache.FlushWithDiagnostics());
         }
 
         // ── The startup line states EXACTLY which legs are active. The
@@ -453,7 +484,8 @@ public sealed class UdpDnsFerry : IDisposable
         //    single unambiguous sentence removes that whole class of confusion.
         Trace(
             $"DNS/STUN ferry started — " +
-            $"DNS relay: {(dnsLeg ? "ON (UDP 53, both families; TCP/53 via the TCP ferry)" : "off")}; " +
+            $"DNS relay: {(dnsLeg ? "ON (UDP 53, both families; TCP/53 via the TCP ferry; " +
+                "auto-fallback to DNS-over-TCP if the proxy rejects UDP ASSOCIATE)" : "off")}; " +
             $"STUN relay: {(_dns.RelayStun && !_dns.BlockWebRtc ? $"ON (ports {string.Join("/", StunPorts)}, both families)" : "off")}; " +
             $"WebRTC block: {(_dns.BlockWebRtc ? $"ON (dropping those ports — browser video calls will NOT work)" : "off")}");
 
@@ -499,6 +531,16 @@ public sealed class UdpDnsFerry : IDisposable
             try
             {
                 await EnsureRelayAsync(ct).ConfigureAwait(false);
+
+                // The association DOES exist (now or after a late retry).
+                // Un-engage the fallback FIRST so no datagram still sees a
+                // stale TC path, then report plain UDP relay re-activation.
+                if (_tcpFallbackActive)
+                {
+                    _tcpFallbackActive = false;
+                    Trace("UDP ASSOCIATE established — the DNS-over-TCP fallback is OFF; " +
+                          "queries are relayed over UDP again.");
+                }
                 SetRelayStatus(true, "DNS relay active (UDP ASSOCIATE established).");
                 Trace("DNS relay ACTIVE — queries will be relayed through the proxy.");
                 return;
@@ -509,10 +551,40 @@ public sealed class UdpDnsFerry : IDisposable
             }
             catch (Exception ex)
             {
-                SetRelayStatus(false,
-                    $"DNS relay FAILED — the proxy did not accept UDP ASSOCIATE ({ex.Message}). " +
-                    "Queries are dropped while this persists; enable UDP support in your proxy.");
-                Trace($"relay probe failed: {ex.Message} — retrying in 15 s.");
+                // The probe is the PROOF the association cannot exist right now,
+                // so this is the place the fallback engages. It must be set
+                // BEFORE the status line: the UI reads the status, and a user
+                // reading "FAILED" while DNS actually still resolves via TCP
+                // would be misdiagnosing their system the same way we once did.
+                if (_dns.Enabled)
+                {
+                    var firstEngage = !_tcpFallbackActive;
+                    _tcpFallbackActive = true;
+                    if (firstEngage)
+                    {
+                        Trace("DNS-over-TCP fallback ENGAGED — UDP queries will be answered with a " +
+                              "truncated (TC=1) reply, so clients re-resolve over TCP/53, which the " +
+                              "TCP ferry force-relays through the proxy. DNS keeps resolving " +
+                              "without UDP ASSOCIATE support.");
+                    }
+                    SetRelayStatus(false,
+                        "DNS relay's UDP leg FAILED — the proxy did not accept UDP ASSOCIATE " +
+                        $"({ex.Message}). DNS is still resolving over TCP/53 (fallback); only the " +
+                        "plain UDP relay and STUN relay need a UDP-capable proxy.");
+                    Trace($"relay probe failed: {ex.Message} — retrying in 15 s.");
+                }
+                else
+                {
+                    // STUN-only session: the TCP fallback cannot answer STUN
+                    // (STUN has no TCP retry the client would perform on its
+                    // own), so the honest status is exactly what it was — the
+                    // relay feature needs a UDP-capable proxy.
+                    SetRelayStatus(false,
+                        "STUN relay FAILED — the proxy did not accept UDP ASSOCIATE " +
+                        $"({ex.Message}). STUN relaying needs a UDP-capable proxy; " +
+                        "“Block WebRTC” keeps working without one.");
+                    Trace($"relay probe failed: {ex.Message} — retrying in 15 s.");
+                }
                 try { await Task.Delay(TimeSpan.FromSeconds(15), ct).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
             }
@@ -551,9 +623,15 @@ public sealed class UdpDnsFerry : IDisposable
 
         // Leave the system resolving normally again (the proxy leg is gone). Only
         // with the DNS leg on: in a blocking-only session nothing was ever
-        // intercepted, so there is no cache state to undo.
+        // intercepted, so there is no cache state to undo. The message from the
+        // flush is not traced here — at STOP the direct path is coming back
+        // regardless, so a stale cache entry is harmless noise.
         if (_dns.Enabled)
-            DnsCache.Flush();
+            _ = DnsCache.FlushWithDiagnostics();
+
+        // Drop the fallback state with the ferry instance's session: a fresh
+        // Start must probe from zero rather than inherit a stale TC mode.
+        _tcpFallbackActive = false;
         Trace("DNS/STUN ferry stopped.");
     }
 
@@ -687,7 +765,32 @@ public sealed class UdpDnsFerry : IDisposable
         // DNS relay behind a broken STUN relay (exactly the confusion when a
         // leak test still reports the real address).
         if (!isDns)
+        {
             Interlocked.Increment(ref _stunCaptured);
+
+            // ── STUN while the proxy has no usable UDP ASSOCIATE: fail-closed,
+            //    with the knob named. The DNS-over-TCP fallback does NOT apply
+            //    here: a STUN client has no "re-resolve over TCP after TC"
+            //    behaviour, so the datagram can be neither answered nor
+            //    released. (“Block WebRTC” drops STUN deterministically on ANY
+            //    port without needing the proxy at all.) ──
+            if (_tcpFallbackActive)
+            {
+                HandleStunNoAssociate(srcIp, srcPort, dstIp, dstPort, isV6, pid, name, dnsPayload.Length);
+                return;
+            }
+        }
+        else if (_tcpFallbackActive)
+        {
+            // ── DNS with no usable UDP ASSOCIATE: answer via TCP. The probe
+            //    proved the association can never exist, so this query is not
+            //    relayed and not released — it is ANSWERED locally with a
+            //    truncated (TC=1) reply. The client then re-resolves over
+            //    TCP/53, which the TCP ferry force-relays through the proxy
+            //    (the forced port needs only CONNECT, which works). ──
+            HandleDnsOverTcpFallback(handle, isV6, dnsPayload, dstIp, srcIp, dstPort, srcPort, addr);
+            return;
+        }
 
         // Correlation key: a DNS reply echoes the transaction ID in the FIRST
         // TWO bytes; a STUN reply echoes its 12-byte transaction ID in the
@@ -731,14 +834,7 @@ public sealed class UdpDnsFerry : IDisposable
             //    when the reply actually came from the override resolver;
             //    E8-b InjectUdp: Outbound cleared, IfIdx/SubIfIdx preserved,
             //    helper checksums, Impostor=0). ──
-            var packet = isV6
-                ? UdpPacketParser.BuildUdp6Packet(dstIp, srcIp, (ushort)dstPort, srcPort, result.DnsPayload)
-                : UdpPacketParser.BuildUdpPacket(dstIp, srcIp, (ushort)dstPort, srcPort, result.DnsPayload);
-            var replyAddr = addr;
-            replyAddr.LayerEventFlags &= ~(1uL << 17); // clear Outbound → inbound
-            ApplyGameModeDscp(packet, isV6);
-            WinDivertNative.WinDivertHelperCalcChecksums(packet, (uint)packet.Length, ref replyAddr, 0);
-            if (WinDivertNative.WinDivertSend(handle, packet, (uint)packet.Length, IntPtr.Zero, ref replyAddr))
+            if (TryInjectUdpReply(handle, isV6, result.DnsPayload, dstIp, srcIp, dstPort, srcPort, addr))
             {
                 Interlocked.Increment(ref _repliesInjected);
                 if (!isDns)
@@ -746,9 +842,26 @@ public sealed class UdpDnsFerry : IDisposable
             }
             else
             {
-                var err = Marshal.GetLastWin32Error();
-                Trace($"reply injection FAILED (error {err}) — the client's resolver will retry.");
+                Interlocked.Increment(ref _relayFailures);
             }
+        }
+        catch (RelayUnavailableException ex)
+        {
+            // Mid-flight proof the association is unusable — the same facts the
+            // eager probe acts on, observed while the relay was racing it (or
+            // while it re-established). Handle identically so the behaviour
+            // does not depend on WHICH check noticed the dead association
+            // first: DNS answered over TCP, STUN dropped fail-closed.
+            if (isDns)
+            {
+                HandleDnsOverTcpFallback(handle, isV6, dnsPayload, dstIp, srcIp, dstPort, srcPort, addr);
+            }
+            else
+            {
+                HandleStunNoAssociate(srcIp, srcPort, dstIp, dstPort, isV6, pid, name, dnsPayload.Length);
+            }
+            Trace($"association unusable ({ex.Message}) — " +
+                  (isDns ? "query answered via the TCP fallback." : "STUN datagram dropped (fail-closed)."));
         }
         catch (OperationCanceledException)
         {
@@ -774,6 +887,94 @@ public sealed class UdpDnsFerry : IDisposable
             }
             Trace($"query relay FAILED ({ex.Message}) — dropped (fail-closed), client will retry.");
         }
+    }
+
+    /// <summary>
+    /// Sends <paramref name="payload"/> toward the client, spoofed to appear
+    /// from <paramref name="serverIp"/>:<paramref name="serverPort"/> — the
+    /// ORIGINAL server the client addressed. Shared by both reply producers:
+    /// a payload the UDP relay actually received, and the TC fallback's
+    /// truncated reply. Injection FAILURE is not fatal (the client's own
+    /// resolver retry is the safety net) but it is loud, counted, and — per the
+    /// fail-closed contract — never compensated by releasing the query.
+    /// </summary>
+    /// <returns>true when the packet was handed back through the handle.</returns>
+    private bool TryInjectUdpReply(
+        IntPtr handle, bool isV6, byte[] payload,
+        IPAddress serverIp, IPAddress clientIp, ushort serverPort, ushort clientPort,
+        WinDivertAddress address)
+    {
+        var packet = isV6
+            ? UdpPacketParser.BuildUdp6Packet(serverIp, clientIp, serverPort, clientPort, payload)
+            : UdpPacketParser.BuildUdpPacket(serverIp, clientIp, serverPort, clientPort, payload);
+        var replyAddr = address;
+        replyAddr.LayerEventFlags &= ~(1uL << 17); // clear Outbound → inbound
+        ApplyGameModeDscp(packet, isV6);
+        WinDivertNative.WinDivertHelperCalcChecksums(packet, (uint)packet.Length, ref replyAddr, 0);
+        if (WinDivertNative.WinDivertSend(handle, packet, (uint)packet.Length, IntPtr.Zero, ref replyAddr))
+            return true;
+
+        var err = Marshal.GetLastWin32Error();
+        Trace($"reply injection FAILED (error {err}) — the client's resolver will retry.");
+        return false;
+    }
+
+    /// <summary>
+    /// The DNS-over-TCP fallback: answers one captured query with the
+    /// truncated (TC=1) reply from <see cref="DnsTruncatedReply"/>, so the
+    /// client re-resolves over TCP/53 — a forced-proxy port on the ferry's
+    /// sibling, the TCP ferry. A payload too malformed to answer is KEPT
+    /// fail-closed (dropped, never released): falling back to "release it
+    /// because we could not build a reply" would be exactly the direct-path
+    /// leak this component exists to prevent.
+    /// </summary>
+    private void HandleDnsOverTcpFallback(
+        IntPtr handle, bool isV6, byte[] dnsPayload,
+        IPAddress serverIp, IPAddress clientIp, ushort serverPort, ushort clientPort,
+        WinDivertAddress address)
+    {
+        var truncatedReply = DnsTruncatedReply.BuildTruncatedReply(dnsPayload);
+        if (truncatedReply is null)
+        {
+            Interlocked.Increment(ref _relayFailures);
+            Trace($"query {clientIp}:{clientPort} -> {serverIp}:{serverPort} " +
+                  $"({dnsPayload.Length} bytes) dropped (fail-closed): too malformed to answer " +
+                  "even via the TCP fallback — the client's resolver will retry.");
+            return;
+        }
+
+        Trace($"query {clientIp}:{clientPort} -> {serverIp}:{serverPort} " +
+              $"({dnsPayload.Length} bytes) — no UDP ASSOCIATE available; answering TRUNCATED " +
+              "(TC=1) so the client re-resolves over TCP/53, which the TCP ferry relays " +
+              "through the proxy.");
+
+        if (TryInjectUdpReply(handle, isV6, truncatedReply, serverIp, clientIp, serverPort, clientPort, address))
+        {
+            Interlocked.Increment(ref _dnsTcpFallbackReplies);
+            Interlocked.Increment(ref _repliesInjected);
+        }
+        else
+        {
+            Interlocked.Increment(ref _relayFailures);
+        }
+    }
+
+    /// <summary>
+    /// Fail-closed handling of a STUN datagram while the proxy has no usable
+    /// UDP ASSOCIATE. The datagram is dropped (never released — releasing it
+    /// would put STUN back on the wire and re-open the leak), and the trace
+    /// names the setting that reliably closes this path without the proxy.
+    /// </summary>
+    private void HandleStunNoAssociate(
+        IPAddress srcIp, ushort srcPort, IPAddress dstIp, ushort dstPort,
+        bool isV6, int? pid, string? name, int payloadLength)
+    {
+        Interlocked.Increment(ref _relayFailures);
+        Interlocked.Increment(ref _stunFailures);
+        Trace($"STUN {srcIp}:{srcPort} -> {dstIp}:{dstPort} ({(isV6 ? "v6" : "v4")}) " +
+              $"pid={pid} name={name ?? "?"} ({payloadLength} bytes) — dropped: the proxy does not " +
+              "support UDP ASSOCIATE, so STUN cannot be relayed. “Block WebRTC” drops STUN " +
+              "deterministically on ANY port, without needing the proxy.");
     }
 
     /// <summary>
@@ -813,7 +1014,7 @@ public sealed class UdpDnsFerry : IDisposable
                 return _relay;
 
             if (DateTimeOffset.UtcNow < _nextRelayRetry)
-                throw new InvalidOperationException("The UDP relay is not available (retrying shortly).");
+                throw new RelayUnavailableException("The UDP relay is not available (retrying shortly).");
 
             _relay?.Dispose();
             _relay = _relayFactory();
@@ -828,7 +1029,7 @@ public sealed class UdpDnsFerry : IDisposable
                 // Loud trace, then back off — queries fail-closed until the
                 // proxy accepts an association again.
                 _nextRelayRetry = DateTimeOffset.UtcNow.AddSeconds(15);
-                throw new InvalidOperationException(
+                throw new RelayUnavailableException(
                     $"UDP ASSOCIATE with the proxy failed: {ex.Message}", ex);
             }
             return _relay;
@@ -836,6 +1037,27 @@ public sealed class UdpDnsFerry : IDisposable
         finally
         {
             _relayLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Raised by <see cref="EnsureRelayAsync"/> when the UDP association CANNOT
+    /// BE ESTABLISHED (refused, throttled by its own back-off, or otherwise
+    /// dead) — as opposed to a per-query relay failure, where the association
+    /// existed and one exchange failed.
+    ///
+    /// The distinction is load-bearing: an unusable association is proven by
+    /// probe/retry, and on a proxy without UDP ASSOCIATE retrying it forever
+    /// only drops every query — so the per-query handler engages the
+    /// DNS-over-TCP fallback on this type. A single timed-out exchange, by
+    /// contrast, keeps its fail-closed drop: the client's own retry over UDP
+    /// is cheaper than forcing it over TCP.
+    /// </summary>
+    private sealed class RelayUnavailableException : InvalidOperationException
+    {
+        public RelayUnavailableException(string message, Exception? inner = null)
+            : base(message, inner)
+        {
         }
     }
 

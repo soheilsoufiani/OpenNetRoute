@@ -81,13 +81,40 @@ Every failure mode drops the query instead of releasing it directly:
 |---|---|
 | Packet too short to be a DNS query | dropped |
 | Header parse fails (including IPv6 packets with extension headers) | dropped |
-| UDP ASSOCIATE not established (proxy lacks UDP support) | dropped, status surfaced in the UI, retried every 15 s |
+| UDP ASSOCIATE refused (proxy has no UDP support) | the **DNS-over-TCP fallback** engages — queries are answered with a truncated (TC=1) reply so clients re-resolve over TCP/53, which is force-relayed through the proxy; status surfaced in the UI, probe retried every 15 s |
 | Relay timeout or error | dropped; the client's resolver retries |
 | Reply injection fails | the client's resolver retries |
 
 Dropping means the lookup fails. That is the intended trade-off for a privacy feature: a failed query is visible and retryable, whereas a leaked query is silent.
 
-The Windows resolver cache is flushed when the relay starts and again when it stops (`DnsFlushResolverCache`). Without the flush, names resolved **before** START would be served from the local cache without any query to intercept — a leak test run immediately after START could show those stale answers.
+### Proxies without UDP ASSOCIATE (the TCP fallback)
+
+Some SOCKS5 servers accept TCP CONNECT but reject UDP ASSOCIATE with reply `0x07` ("command not supported"); full-VPN backends are the common case. On such a proxy a fail-closed-only relay would mean **no system DNS at all** while the relay is on: not a leak, but not resolution either. To avoid that dead end, the ferry probes the association eagerly at START and — when the proxy proves it cannot provide one — answers captured UDP/53 queries locally with a **truncated (TC=1) reply** (`DnsTruncatedReply`):
+
+* the reply echoes the transaction ID, the OPCODE, the RD bit, and the verbatim question section;
+* it sets QR and TC, carries NOERROR, and has zero answer/authority/additional records (an EDNS0 OPT in the query is deliberately **not** echoed — a truncated response must advertise no more than the resolver's UDP buffer, and over TCP the buffer does not matter);
+* the dropped query is **answered, not released**: nothing ever goes to the direct path.
+
+A compliant resolver — the Windows resolver included — then re-issues the same query over **TCP/53**, which the TCP ferry force-relays through the proxy (a port that needs only CONNECT, which such proxies do support). The query still travels through the proxy.
+
+Honest limits of the fallback:
+
+* One extra round trip per name: the UDP query is answered with TC, then the TCP retry carries the real lookup.
+* A client that ignores the TC bit gets no answer rather than a leak — the query is never released direct. The Windows resolver honors TC.
+* Queries too malformed to echo faithfully (shorter than a header, zero or multiple questions, compression/extended labels in the question, a runaway label) stay fail-closed dropped; the fallback never fabricates a dubious reply.
+* **STUN has no TC-equivalent**: on a UDP-less proxy, "Relay STUN" cannot work and each STUN datagram is dropped fail-closed with a log line naming the choice. "Block WebRTC" keeps working with *any* proxy because it needs nothing from the proxy at all.
+* The probe retries every 15 s; when UDP ASSOCIATE becomes available the fallback disengages automatically and plain UDP relaying resumes.
+
+Which proxy capability each feature needs:
+
+| Feature | TCP CONNECT | UDP ASSOCIATE |
+|---|---|---|
+| DNS relay (plain UDP leg) | — | **required** |
+| DNS relay (TCP fallback leg) | **required** | not required |
+| WebRTC blocking (STUN drop) | not required | not required |
+| STUN relay | — | **required** |
+
+Concretely: a CONNECT-only proxy (the common full-VPN shape) still resolves DNS over the TCP fallback, and still blocks WebRTC reliably — it just cannot *relay* STUN. The Windows resolver cache is flushed when the relay starts and again when it stops (`DnsFlushResolverCache`, with the Win32 error **surfaced** and an `ipconfig /flushdns` retry when the native call fails). Without the flush, names resolved **before** START would be served from the local cache without any query to intercept — a leak test run immediately after START could show those stale answers.
 
 ## Process Scope
 
@@ -116,10 +143,9 @@ Automated tests cover the parts that can be verified without a live proxy:
 * **only one component owns STUN**: with blocking on, the DNS/STUN ferry must not also capture the STUN ports, since two diverting handles on one datagram is a race rather than redundancy;
 * the STUN port set on BOTH address families (`BuildFilterV6(relayStun: true)`) — the IPv6-DNS-only regression that made STUN relaying silently ineffective on dual-stack hosts;
 * the TCP ferry's forced-port set — default empty, `{ 53 }` when the DNS relay is on, and never any other port;
+* the **DNS-over-TCP fallback reply format** (`DnsTruncatedReplyTests`): the ID/OPCODE/RD echoed, TC set, every record count zero, the question verbatim, the EDNS OPT not echoed — and every non-query shape (QR already set, zero or two questions, a compression pointer, an extended label, a runaway label, a short header) refused, so the ferry keeps those fail-closed dropped instead of fabricating a dubious reply;
 * resolver-override validation — both address families accepted, non-literals and loopback rejected, empty allowed;
 * the SNI ClientHello parser and its classification (`DnsSniInspectorTests`): hostname extraction, truncated/malformed input rejected without throwing, exact-match-only behaviour, and that ordinary web hostnames are never flagged.
-
-The core relay mechanism (capture, forward through UDP ASSOCIATE, reinject inbound, no observed processing loop) was validated by the E8-a/E8-b spike experiments and by live manual testing.
 
 The core relay mechanism (capture, forward through UDP ASSOCIATE, reinject inbound, no observed processing loop) was validated by the E8-a/E8-b spike experiments and by live manual testing.
 
@@ -199,7 +225,7 @@ DNS protection does not prevent other forms of network exposure:
   | Option | How STUN is recognised | Reliability | Cost |
   |---|---|---|---|
   | **Block WebRTC** (recommended) | **By content, on any port** — the RFC 5389 magic cookie | **Cannot fail open** — needs no proxy UDP support, and does not depend on which port the STUN server uses | **Browser video calls stop working.** With no reachable STUN server WebRTC has no server-reflexive candidate, so Meet / Zoom-in-browser / Discord calls cannot connect |
-  | Relay STUN | **By port** — a fixed list, relayed through the proxy so WebRTC reports the proxy's address | Depends on the proxy supporting SOCKS5 **UDP ASSOCIATE**, *and* on the STUN server using a listed port | Keeps video calls working; an unlisted port or a failed relay still leaks |
+  | Relay STUN | **By port** — a fixed list, relayed through the proxy so WebRTC reports the proxy's address | Depends on the proxy supporting SOCKS5 **UDP ASSOCIATE**, *and* on the STUN server using a listed port — on a proxy with no UDP support each STUN datagram is dropped fail-closed and the log says so (over and over, per datagram) | Keeps video calls working; an unlisted port or a failed relay still leaks. **For WebRTC protection choose Block — Relay STUN is for keeping calls working only** |
 
   Blocking wins when both are enabled — of the two, dropping is the only one that cannot fail open into a direct candidate.
 
@@ -258,8 +284,8 @@ These are separate from DNS and need their own handling if complete traffic priv
 
 ## Scope
 
-* **Intercepted and relayed:** plaintext DNS on UDP/53 and TCP/53, IPv4 and IPv6, system-wide.
-* **Fail-closed:** unparsable packets, relay failures, and relay unavailability all drop the query rather than sending it directly.
+* **Intercepted and relayed:** plaintext DNS on UDP/53 and TCP/53, IPv4 and IPv6, system-wide — including an automatic TCP relay path when the proxy has no UDP ASSOCIATE.
+* **Fail-closed:** unparsable packets, relay failures, and relay unavailability drop the query rather than sending it directly. The one engineered exception is the UDP-less proxy case, where a query is *answered* (TC=1) instead of dropped — still never released to the direct path.
 * **Cache-safe:** the Windows resolver cache is flushed at START and STOP.
 * **Observed and named:** DoH endpoints on TCP/443 are identified by their ClientHello SNI. Nothing is blocked or altered.
 * **Not intercepted:** DoH, DoT, DoQ, DoH-over-QUIC, and custom resolvers on non-standard ports.
@@ -273,9 +299,10 @@ If an application appears to bypass the DNS relay:
 2. Check whether it uses plaintext DNS at all — a DoH-configured browser never touches UDP/53.
 3. Check for a custom resolver on a non-standard port.
 4. Confirm the relay is Active: the status line reports a probe result at START, and the Debug log shows each relayed query. A query line reads `relaying via proxy to 1.1.1.1:53 (resolver override: 203.0.113.53 -> 1.1.1.1)` — both addresses are logged, so you can see what the app asked for *and* what it actually got.
-5. Look for `relay FAILED` or `dropped (fail-closed)` entries — these mean the query was **blocked, not leaked**, and usually point at a proxy without UDP support.
-6. Check for `IPv6 capture unavailable` — on a dual-stack host this means IPv6 DNS could not be captured and is a genuine exposure.
-7. A failed lookup takes a couple of seconds (relay timeout plus the client's own retries), which is normal.
+5. Look for `relay probe failed` and `DNS-over-TCP fallback ENGAGED` — the most common cause since full-VPN SOCKS5 backends: `SOCKS5 server rejected the request: command not supported` is SOCKS5 reply `0x07`, meaning **the proxy has no UDP ASSOCIATE**. On such a proxy DNS still resolves through the TCP fallback (the Data Usage line shows `TCP/53 FALLBACK`), but "Relay STUN" cannot work — each STUN datagram is dropped with a log line explaining it, and "Block WebRTC" remains fully functional.
+6. Look for `dropped (fail-closed)` entries — these mean a query was **blocked, not leaked**.
+7. Check for `IPv6 capture unavailable` — on a dual-stack host this means IPv6 DNS could not be captured and is a genuine exposure.
+8. A failed lookup takes a couple of seconds (relay timeout plus the client's own retries), which is normal.
 
 ### Reading a leak-test result
 

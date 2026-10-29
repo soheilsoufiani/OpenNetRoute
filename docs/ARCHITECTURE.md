@@ -108,8 +108,8 @@ Plaintext DNS is handled separately from the TCP ferry, and is intercepted on **
 
 | Transport | Capture | Relayed via |
 |---|---|---|
-| UDP/53, IPv4 | `outbound and ip and udp and udp.DstPort == 53` | SOCKS5 UDP ASSOCIATE |
-| UDP/53, IPv6 | `outbound and ipv6 and udp and udp.DstPort == 53` | SOCKS5 UDP ASSOCIATE |
+| UDP/53, IPv4 | `outbound and ip and udp and udp.DstPort == 53` | SOCKS5 UDP ASSOCIATE; without it, answered locally with a truncated (TC=1) reply |
+| UDP/53, IPv6 | `outbound and ipv6 and udp and udp.DstPort == 53` | SOCKS5 UDP ASSOCIATE; without it, answered locally with a truncated (TC=1) reply |
 | TCP/53, IPv4 | the TCP ferry's capture filter, with port 53 as a forced-proxy port | SOCKS5 CONNECT |
 | TCP/53, IPv6 | a second TCP-ferry handle, `outbound and ipv6 and tcp and tcp.DstPort == 53` | SOCKS5 CONNECT |
 
@@ -146,7 +146,7 @@ DNS response
 Application
 ```
 
-Relay failures are **fail-closed**: an unparsable packet, an unavailable association, or a timeout all drop the query instead of releasing it directly. The Windows resolver cache is flushed at START and STOP so pre-START answers cannot be served without interception.
+Relay failures are **fail-closed**: an unparsable packet, an unavailable association, or a timeout all drop the query instead of releasing it directly. The one engineered exception is a proxy that cannot provide UDP ASSOCIATE at all: there the UDP ferry answers queries locally with a truncated (TC=1) reply, so the client re-resolves over TCP/53 — already a forced-proxy port — keeping DNS working on CONNECT-only proxies, while STUN relaying (which has no TC-equivalent) stays fail-closed dropped. The Windows resolver cache is flushed at START and STOP so pre-START answers cannot be served without interception.
 
 ### Encrypted DNS: observed, not relayed
 
@@ -277,6 +277,7 @@ Known limitations include:
 * QUIC and arbitrary UDP traffic require additional handling;
 * some applications use networking mechanisms that are difficult to attribute or intercept reliably;
 * encrypted DNS (DoH/DoT/DoQ) and custom resolvers on non-standard ports are outside interception — plaintext DNS has no direct-path fallback, but encrypted DNS cannot be observed without TLS interception;
+* on proxies without UDP ASSOCIATE, DNS resolves through a synthetic truncated (TC=1) reply whose TCP retry is force-relayed — the fallback trusts the client to honor RFC 1035 truncation (the Windows resolver does); a client that does not gets no answer rather than a leak, and STUN relaying on such a proxy stays fail-closed dropped;
 * WebRTC blocking closes the UDP STUN discovery path on any port, but not TURN over TCP/TLS or TCP STUN, which are outside a UDP content match — a TURN relay obtained over TCP can still report the address;
 * settings sections must be explicitly carried from the UI into the engine's runtime configuration — a section silently reverted to its default looks identical to a feature that is working but idle, which is why this is enforced by test rather than by convention;
 * endpoint behavior can vary across Windows versions, applications, firewall configurations, and security software.

@@ -206,13 +206,20 @@ Verify that:
 * the Data Usage tab shows the detection and the observer's counters;
 * **the connection still works** — the observer is passive and must not change routing. If enabling it breaks browsing, that is a bug, not expected behaviour.
 
-### 10.4 Fail-closed behaviour
+### 10.4 Fail-closed behaviour — and the TCP fallback
 
-Expect lookups to fail (a couple of seconds, with client retries) when the relay cannot serve them — for example with a proxy that does not support UDP ASSOCIATE.
+Two scenarios, both worth running if the test proxy mirrors your real one.
 
-Verify that:
+**A. A proxy WITHOUT UDP ASSOCIATE** (reply `0x07: command not supported`; common on full-VPN SOCKS5 backends):
 
-* failures appear as `relay FAILED` or `dropped (fail-closed)`, i.e. the query was **blocked, not leaked**;
+* DNS lookups must **still succeed** — after the first `UDP ASSOCIATE refused` trace, the log shows `DNS-over-TCP fallback ENGAGED`, and each query line reads `answering TRUNCATED (TC=1)`;
+* each answered query then re-appears as a TCP/53 line from the TCP ferry (the client honored the TC bit) — on the Data Usage tab the DNS line shows `TCP/53 FALLBACK (N answered)`;
+* nothing is sent directly; a leak test still shows your proxy egress or the configured override, never the ISP;
+* with "Relay STUN" enabled, every STUN datagram is dropped with a log line naming the missing proxy capability — that leg genuinely cannot work without UDP.
+
+**B. Genuine fail-closed cases** (e.g. relay timeout, an unusable network):
+
+* failures appear as `relay FAILED` or `dropped (fail-closed)`, i.e. the query was **blocked, not leaked** — with one exception: when the fallback is active, a too-malformed query is also dropped (it must not be answered with a dubious reply);
 * nothing is sent directly as a fallback;
 * turning the relay off restores normal system DNS.
 

@@ -84,6 +84,30 @@ public class Socks5UdpAssociateTests
             client.RelayAsync(DnsQuery(), IPAddress.Parse("192.168.100.1"), 53));
     }
 
+    [Fact]
+    public async Task StartAsync_WhenProxyRejectsUdpAssociate_ThrowsAReplyErrorWithCommandNotSupported()
+    {
+        // THE UDP-LESS PROXY CASE (full-VPN SOCKS5 backends are the classic
+        // example): the control leg negotiates fine, but the CMD 3 request is
+        // answered with reply code 0x07 — "command not supported". The client
+        // must surface this as a protocol REPLY error with the specific code,
+        // because this is exactly the exception the DNS ferry's eager relay
+        // probe catches to engage the DNS-over-TCP fallback; an opaque network
+        // failure here would both mislabel the cause and miss the fallback.
+        using var server = new Socks5TestServer((request, stream, ct) =>
+        {
+            Assert.Equal(0x03, request.Command); // UDP ASSOCIATE (not CONNECT)
+            return Socks5TestServer.WriteReplyAsync(
+                stream, 0x07, Socks5TestServer.AtypIpv4, ct: ct);
+        });
+
+        using var client = new Socks5UdpAssociateClient(ProxyConfig(server.Port));
+        var ex = await Assert.ThrowsAsync<Socks5Exception>(() => client.StartAsync());
+
+        Assert.True(ex.IsReplyError);
+        Assert.Equal(Socks5ReplyCode.CommandNotSupported, ex.ReplyCode);
+    }
+
     /// <summary>A syntactically valid DNS payload with NO question (QDCOUNT=0) — the echo relay drops it.</summary>
     private static byte[] DnsPayloadNoQuestion(byte idHi, byte idLo)
     {

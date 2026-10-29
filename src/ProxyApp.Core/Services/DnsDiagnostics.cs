@@ -42,6 +42,18 @@ public sealed record DnsDiagnostics(
     /// <summary>Relay failures (fail-closed drops; the client retries).</summary>
     long RelayFailures,
 
+    /// <summary>
+    /// True when the proxy rejected UDP ASSOCIATE and captured queries are being
+    /// answered with truncated (TC=1) replies so clients re-resolve over TCP/53
+    /// (which is force-relayed). DNS is NOT broken in this state — but the plain
+    /// UDP relay is, and the UI must say "working via TCP" rather than reporting
+    /// a relay failure as if nothing resolved.
+    /// </summary>
+    bool DnsTcpFallbackActive,
+
+    /// <summary>Queries answered locally with the truncated (TC=1) reply.</summary>
+    long DnsTcpFallbackReplies,
+
     /// <summary>Captured datagrams dropped because they could not be parsed.</summary>
     long QueriesDroppedUnparsable,
 
@@ -117,6 +129,8 @@ public sealed record DnsDiagnostics(
         QueriesRelayed: 0,
         RepliesInjected: 0,
         RelayFailures: 0,
+        DnsTcpFallbackActive: false,
+        DnsTcpFallbackReplies: 0,
         QueriesDroppedUnparsable: 0,
         Ipv6CaptureActive: false,
         SniInspectionActive: false,

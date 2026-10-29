@@ -74,7 +74,7 @@ jobs:
           - Tunnel optimization settings
           - Debug and logging support
 
-          All plaintext DNS is relayed system-wide with no direct-path fallback: UDP 53 and TCP 53, IPv4 and IPv6 (SOCKS5 UDP ASSOCIATE and CONNECT), failing closed if a query cannot be relayed. Encrypted DNS (DoH, DoT, DoQ) cannot be relayed, but DoH on TCP/443 is detected and named by a passive observer; DoH over QUIC and Encrypted ClientHello are not observable.
+          All plaintext DNS is relayed system-wide with no direct-path fallback: UDP 53 and TCP 53, IPv4 and IPv6 (SOCKS5 UDP ASSOCIATE and CONNECT), failing closed if a query cannot be relayed. A proxy without UDP ASSOCIATE does not take DNS down: queries are answered with a truncated (TC=1) reply so clients re-resolve over TCP/53, which is relayed through the proxy. Encrypted DNS (DoH, DoT, DoQ) cannot be relayed, but DoH on TCP/443 is detected and named by a passive observer; DoH over QUIC and Encrypted ClientHello are not observable.
 
           This is a Beta release, so some applications, protocols, or Windows configurations may behave differently.
 

@@ -342,6 +342,12 @@ public sealed class ProxyEngine : IProxyEngine, IDisposable
             QueriesRelayed: dns?.QueriesRelayed ?? 0,
             RepliesInjected: dns?.RepliesInjected ?? 0,
             RelayFailures: dns?.RelayFailures ?? 0,
+            // The TCP fallback is the difference between "the relay's UDP leg is
+            // dead" and "DNS resolves anyway" — without surfacing it, the UI
+            // would report a failure while the system resolves fine, inviting
+            // the user to switch settings off to "fix" what is already fixed.
+            DnsTcpFallbackActive: dns?.IsTcpFallbackActive ?? false,
+            DnsTcpFallbackReplies: dns?.DnsTcpFallbackReplies ?? 0,
             QueriesDroppedUnparsable: dns?.QueriesDroppedUnparsable ?? 0,
             Ipv6CaptureActive: dns?.IsIpv6CaptureActive ?? false,
             SniInspectionActive: sni is not null && sni.IsRunning,

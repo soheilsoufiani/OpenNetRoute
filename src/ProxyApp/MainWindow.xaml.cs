@@ -747,6 +747,13 @@ public partial class MainWindow : Window
             DnsDiagnosticsText.Text =
                 $"{d.RelayStatus} · captured {d.QueriesCaptured} · relayed {d.QueriesRelayed} · " +
                 $"replies {d.RepliesInjected} · failed {d.RelayFailures} · dropped {d.QueriesDroppedUnparsable}" +
+                // TCP fallback: say it in the SAME line, not only in the relay
+                // status string above — a status line that says "FAILED" about
+                // the UDP leg while DNS actually resolves over TCP is the kind
+                // of half-truth users then try to fix by switching settings off.
+                (d.DnsTcpFallbackActive
+                    ? $" · TCP/53 FALLBACK ({d.DnsTcpFallbackReplies} answered) — proxy has no UDP ASSOCIATE; DNS resolves over TCP"
+                    : "") +
                 (d.Ipv6CaptureActive ? " · IPv4+IPv6" : " · IPv4 only (no IPv6 handle)");
         }
 
